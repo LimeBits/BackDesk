@@ -1,0 +1,16 @@
+# Build artifacts
+build/
+*.app/
+*.zip
+*.dmg
+dmg_temp*/
+
+# Backup files
+*.bak
+
+# macOS system files
+.DS_Store
+
+# Temporary files
+*.icns
+*.iconset/
