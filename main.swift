@@ -157,12 +157,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - 点击监听与判定
     func startMonitoring() {
-        guard globalMonitor == nil && isEnabled else { return }
-        
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.handleGlobalClick(event)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard self.globalMonitor == nil && self.isEnabled else { return }
+            
+            self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                self?.handleGlobalClick(event)
+            }
+            print("已成功在主线程异步开启全局点击监听")
         }
-        print("已成功开启全局点击监听")
     }
     
     func stopMonitoring() {
@@ -193,7 +196,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func isClickOnDesktop(at point: CGPoint) -> Bool {
-        // 获取所有在屏幕上显示的窗口（按前后遮挡顺序排布）
+        // 1. 核心修复：高精度拦截系统 Dock 栏和顶部菜单栏/状态栏区域的点击。
+        // 通过 visibleFrame 与 frame 的差集做比对，天然免疫 Dock 在屏幕任意位置（底部/左侧/右侧）、废纸篓、最小化窗口以及任何多显示器缩放的分界。
+        guard let primaryScreen = NSScreen.screens.first else { return false }
+        let primaryHeight = primaryScreen.frame.height
+        let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
+        
+        for screen in NSScreen.screens {
+            let screenFrame = screen.frame
+            if screenFrame.contains(cocoaPoint) {
+                let visibleFrame = screen.visibleFrame
+                if !visibleFrame.contains(cocoaPoint) {
+                    print("点击落在系统保留区域外（Dock栏 或 菜单栏），已拦截")
+                    return false
+                }
+                break
+            }
+        }
+
+        // 2. 获取所有在屏幕上显示的窗口（按前后遮挡顺序排布）
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
@@ -208,14 +229,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
             let windowName = window[kCGWindowName as String] as? String ?? ""
-            
-            // 核心修复 2: 拦截点击落在系统 Dock 栏以及系统菜单栏/通知中心区域
-            if ownerName == "Dock" || ownerName == "SystemUIServer" || ownerName == "ControlCenter" {
-                if rect.contains(point) {
-                    print("点击被系统服务窗口拦截: \(ownerName), Rect: \(rect)")
-                    return false
-                }
-            }
             
             // 我们只关注普通应用程序窗口（Layer 0）
             if layer == 0 {
@@ -241,7 +254,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // 核心修复 1: 利用 Accessibility API 深度判断鼠标是否落在了 Finder 桌面文件/文件夹图标上
+        // 3. 核心修复：利用 Accessibility API 深度探测鼠标是否落在了 Finder 桌面上的文件/文件夹/磁盘挂载等图标上。
         let systemWide = AXUIElementCreateSystemWide()
         var element: AXUIElement?
         let axResult = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
@@ -256,10 +269,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if bundleId == "com.apple.finder" {
                         var roleValue: AnyObject?
                         AXUIElementCopyAttributeValue(clickedElement, kAXRoleAttribute as CFString, &roleValue)
-                        if let role = roleValue as? String {
-                            // 桌面图标的文件名是 AXStaticText，图标图片是 AXImage
-                            if role == "AXStaticText" || role == "AXImage" || role == "AXButton" {
-                                print("点击落在桌面文件或文件夹图标上 (Role: \(role))，已拦截")
+                        let role = roleValue as? String ?? ""
+                        
+                        var titleValue: AnyObject?
+                        AXUIElementCopyAttributeValue(clickedElement, kAXTitleAttribute as CFString, &titleValue)
+                        let title = (titleValue as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        
+                        print("点击了 Finder 元素 - Role: \(role), Title: \(title)")
+                        
+                        if role == "AXScrollArea" || role == "AXWindow" {
+                            // 极速判定：点击在壁纸的最底层，放行触发桌面摊开
+                        } else {
+                            // 只要角色不是桌面最底层壁纸背景，且标题不为空、不为 "Desktop"/"桌面"/"Finder"，
+                            // 或者角色本身是文字（标签）、图片（图标）、按钮或通用图标，就一律判定为点击了桌面文件图标
+                            let isDesktopTitle = (title == "Desktop" || title == "桌面" || title == "Finder" || title.isEmpty)
+                            if !isDesktopTitle || role == "AXStaticText" || role == "AXImage" || role == "AXIcon" || role == "AXButton" {
+                                print("判定为点击了桌面文件或文件夹图标，已拦截")
                                 return false
                             }
                         }
