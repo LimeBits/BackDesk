@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var isEnabled: Bool = true
     var lastTriggerTime: Date = Date.distantPast
     var permissionTimer: Timer?
+    var pendingClickWorkItem: DispatchWorkItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 1. 创建状态栏图标与菜单
@@ -125,7 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 ToDesktop"
-        alert.informativeText = "ToDesktop v0.1.0\n专为 macOS 12/13 系统开发的桌面快速展示工具。\n\n点击屏幕空白壁纸即可快速摊开所有窗口露出桌面，再次点击桌面试图可恢复原样。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "ToDesktop v0.2.0\n专为 macOS 12/13/14+ 系统开发的桌面快速展示工具。\n\n点击屏幕空白壁纸即可快速摊开所有窗口露出桌面，再次点击桌面试图可恢复原样。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -184,8 +185,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let clickPoint = convertToCGCoordinate(mouseLocation)
         
         // 智能分析是否点击了桌面壁纸
-        if isClickOnDesktop(at: clickPoint) {
-            triggerShowDesktop()
+        guard isClickOnDesktop(at: clickPoint) else { return }
+        
+        let clickCount = event.clickCount
+        
+        if clickCount == 2 {
+            // 1. 彻底取消挂起的“单击显示桌面”任务，防止屏幕闪烁
+            pendingClickWorkItem?.cancel()
+            pendingClickWorkItem = nil
+            
+            // 2. 立即触发“双击展开所有窗口列表”
+            triggerMissionControl()
+        } else if clickCount == 1 {
+            // 1. 取消上一次可能存在的单/双击残留任务以防重合
+            pendingClickWorkItem?.cancel()
+            
+            // 2. 延迟系统标准的双击时间间隔再执行“单击”逻辑
+            let delay = NSEvent.doubleClickInterval
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.triggerShowDesktop()
+            }
+            pendingClickWorkItem = workItem
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
         }
     }
     
@@ -412,6 +434,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try process.run()
         } catch {
             print("调用 Mission Control 失败: \(error)")
+        }
+    }
+    
+    func triggerMissionControl() {
+        // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
+        let now = Date()
+        guard now.timeIntervalSince(lastTriggerTime) > 0.5 else {
+            return
+        }
+        lastTriggerTime = now
+        
+        print("双击了桌面空白处！正在唤醒 Mission Control 展开所有窗口列表。")
+        
+        // 原生调用 Mission Control，不带参数（默认无参数是展开所有窗口平铺列表）
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
+        do {
+            try process.run()
+        } catch {
+            print("调用 Mission Control 展开所有窗口列表失败: \(error)")
         }
     }
     
