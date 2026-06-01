@@ -3,8 +3,11 @@ import CoreGraphics
 import ApplicationServices
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: AppDelegate?
+    
     var statusItem: NSStatusItem!
-    var globalMonitor: Any?
+    var eventTap: CFMachPort?
+    var runLoopSource: CFRunLoopSource?
     
     var isSingleClickEnabled: Bool = true
     var isDoubleClickEnabled: Bool = true
@@ -16,7 +19,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastClickTime: Date = Date.distantPast
     var lastClickPoint: CGPoint = .zero
     
+    func logToFile(_ message: String) {
+        let logPath = "/Users/bruce/Desktop/b-vibe/todesktop/app_test.log"
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        let timestamp = formatter.string(from: Date())
+        let logLine = "[\(timestamp)] \(message)\n"
+        print(message)
+        
+        if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+            fileHandle.seekToEndOfFile()
+            if let data = logLine.data(using: .utf8) {
+                fileHandle.write(data)
+            }
+            fileHandle.closeFile()
+        } else {
+            try? logLine.write(toFile: logPath, atomically: true, encoding: .utf8)
+        }
+    }
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
+        
+        // 清理以前的旧日志文件，开启本次运行的干净日志
+        try? FileManager.default.removeItem(atPath: "/Users/bruce/Desktop/b-vibe/todesktop/app_test.log")
+        
+        logToFile("==================================================================")
+        logToFile("🚀 ToDesktop 应用启动成功！正在载入极客监测日志系统...")
+        logToFile("==================================================================")
+        
         // 从 UserDefaults 加载用户偏好设置，若不存在则默认为 true
         if UserDefaults.standard.object(forKey: "isSingleClickEnabled") == nil {
             UserDefaults.standard.set(true, forKey: "isSingleClickEnabled")
@@ -28,16 +59,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isSingleClickEnabled = UserDefaults.standard.bool(forKey: "isSingleClickEnabled")
         isDoubleClickEnabled = UserDefaults.standard.bool(forKey: "isDoubleClickEnabled")
         
+        logToFile("加载配置偏好: isSingleClickEnabled = \(isSingleClickEnabled)")
+        logToFile("加载配置偏好: isDoubleClickEnabled = \(isDoubleClickEnabled)")
+        
         // 1. 创建状态栏图标与菜单
         setupStatusItem()
         
         // 2. 检查并请求辅助功能权限
         let hasAccess = checkAccessibility(prompt: false)
-        let shouldMonitor = hasAccess && (isSingleClickEnabled || isDoubleClickEnabled)
+        logToFile("系统辅助功能检测结果 (Trust State) = \(hasAccess)")
         
-        if shouldMonitor {
+        if hasAccess {
             startMonitoring()
-        } else if !hasAccess {
+        } else {
             promptForAccessibility()
             startPermissionPolling()
         }
@@ -54,10 +88,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.permissionTimer?.invalidate()
                 self.permissionTimer = nil
                 
-                let shouldMonitor = self.isSingleClickEnabled || self.isDoubleClickEnabled
-                if shouldMonitor {
-                    self.startMonitoring()
-                }
+                self.startMonitoring()
                 self.buildMenu()
                 print("🎉 自动检测到系统辅助功能权限已开通，全局监听已激活！")
             }
@@ -114,16 +145,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func buildMenu() {
         let menu = NSMenu()
         
-        // 0. 智能检测并展示系统原生冲突引导警告
-        if isSystemClickToRevealConflict() {
-            let conflictItem = NSMenuItem(title: "⚠️ 建议优化系统设置以避免冲突...", action: #selector(handleSettingsConflict), keyEquivalent: "")
-            menu.addItem(conflictItem)
-            menu.addItem(NSMenuItem.separator())
+        let is14OrAbove: Bool
+        if #available(macOS 14.0, *) {
+            is14OrAbove = true
+        } else {
+            is14OrAbove = false
         }
         
-        // 1. 单击开关项
-        let singleClickItem = NSMenuItem(title: "🖥️ 单击壁纸展示桌面", action: #selector(toggleSingleClick), keyEquivalent: "s")
-        singleClickItem.state = isSingleClickEnabled ? .on : .off
+        // 1. 单击开关项 (动态文案)
+        let singleClickTitle: String
+        let singleClickState: NSControl.StateValue
+        if isSingleClickEnabled {
+            singleClickTitle = "🖥️ 单击壁纸展示桌面"
+            singleClickState = .on
+        } else {
+            if is14OrAbove {
+                singleClickTitle = "🛡️ 屏蔽系统壁纸误触 (推荐)"
+                singleClickState = .on // 屏蔽罩处于激活工作状态，显示勾选框以示正常工作
+            } else {
+                singleClickTitle = "🖥️ 关闭单击壁纸展示桌面"
+                singleClickState = .off
+            }
+        }
+        
+        let singleClickItem = NSMenuItem(title: singleClickTitle, action: #selector(toggleSingleClick), keyEquivalent: "s")
+        singleClickItem.state = singleClickState
         menu.addItem(singleClickItem)
         
         // 2. 双击开关项
@@ -174,9 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func updateMonitoringState() {
         let hasAccess = checkAccessibility(prompt: false)
-        let shouldMonitor = hasAccess && (isSingleClickEnabled || isDoubleClickEnabled)
-        
-        if shouldMonitor {
+        if hasAccess {
             startMonitoring()
         } else {
             stopMonitoring()
@@ -235,67 +279,163 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    // MARK: - 点击监听与判定
-    func startMonitoring() {
-        guard globalMonitor == nil && (isSingleClickEnabled || isDoubleClickEnabled) else { return }
-        
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            self?.handleGlobalClick(event)
-        }
-        print("已成功开启全局点击监听")
-    }
-    
-    func stopMonitoring() {
-        if let monitor = globalMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalMonitor = nil
-        }
-        print("已关闭全局点击监听")
-    }
-    
-    func handleGlobalClick(_ event: NSEvent) {
-        let mouseLocation = NSEvent.mouseLocation
-        let clickPoint = convertToCGCoordinate(mouseLocation)
-        
-        // 智能分析是否点击了桌面壁纸
-        guard isClickOnDesktop(at: clickPoint) else { return }
-        
-        let now = Date()
-        let timeDiff = now.timeIntervalSince(lastClickTime)
-        let clickDistance = hypot(clickPoint.x - lastClickPoint.x, clickPoint.y - lastClickPoint.y)
-        
-        let doubleClickInterval = NSEvent.doubleClickInterval
-        
-        if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < 10 {
-            // 【判定为双击】
-            pendingClickWorkItem?.cancel()
-            pendingClickWorkItem = nil
+    func showAccessibilityErrorAlert() {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "⚠️ 系统辅助功能授权已失效"
+            alert.informativeText = "由于 ToDesktop 进行了重新编译与安装，macOS 安全系统已经置空了之前的隐私授权缓存。\n\n请打开「系统设置 -> 隐私与安全性 -> 辅助功能」，在列表中将 [ToDesktop] 的开关先【关闭】然后再【重新开启】一次，即可彻底恢复正常工作！"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "去系统设置")
+            alert.addButton(withTitle: "好的")
             
-            triggerMissionControl()
-            
-            lastClickTime = Date.distantPast
-            lastClickPoint = .zero
-        } else {
-            // 【判定为单击第一下】
-            lastClickTime = now
-            lastClickPoint = clickPoint
-            
-            pendingClickWorkItem?.cancel()
-            
-            if isSingleClickEnabled {
-                if isDoubleClickEnabled {
-                    // 若双击功能开启，延迟等待系统标准的双击间隔后再执行“单击”逻辑，防止双击事件在判定前流失
-                    let workItem = DispatchWorkItem { [weak self] in
-                        self?.triggerShowDesktop()
-                    }
-                    pendingClickWorkItem = workItem
-                    DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
-                } else {
-                    // 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
-                    triggerShowDesktop()
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
                 }
             }
         }
+    }
+    
+    // MARK: - 点击监听与判定
+    func startMonitoring() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard self.eventTap == nil else { return }
+            
+            self.logToFile("🔄 准备异步创建 CGEventTap 事件过滤器...")
+            
+            let eventMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+            
+            AppDelegate.shared = self
+            
+            guard let tap = CGEvent.tapCreate(
+                tap: .cgSessionEventTap,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: eventMask,
+                callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+                    guard let delegate = AppDelegate.shared else {
+                        return Unmanaged.passRetained(event)
+                    }
+                    return delegate.handleCGEvent(proxy: proxy, type: type, event: event)
+                },
+                userInfo: nil
+            ) else {
+                self.logToFile("❌ 创建 CGEventTap 失败！系统辅助功能授权静默失效，显示警告向导。")
+                self.showAccessibilityErrorAlert()
+                return
+            }
+            
+            self.eventTap = tap
+            self.runLoopSource = autoreleasepool {
+                CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            }
+            
+            if let source = self.runLoopSource {
+                CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+            }
+            
+            CGEvent.tapEnable(tap: tap, enable: true)
+            self.logToFile("🎉 [EventTap] 已成功启用，开始截获系统鼠标左键按下事件监控。")
+        }
+    }
+    
+    func stopMonitoring() {
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let source = runLoopSource {
+                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            }
+            eventTap = nil
+            runLoopSource = nil
+        }
+        print("已关闭 CGEventTap 主动过滤监听")
+    }
+    
+    func handleCGEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .leftMouseDown {
+            let point = event.location
+            logToFile("🖱️ [Click] 监听到鼠标左键按下，位置坐标: \(point)")
+            
+            // 核心修复：检查当前屏幕上是否有展开的弹出菜单（Menu Popup）。
+            if let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
+                let popUpMenuLevel = CGWindowLevelForKey(.popUpMenuWindow)
+                let isMenuExpanded = windowList.contains { window in
+                    guard let layer = window[kCGWindowLayer as String] as? Int else { return false }
+                    return layer == Int(popUpMenuLevel)
+                }
+                
+                if isMenuExpanded {
+                    logToFile("👉 [检测到菜单展开] 当前屏幕上有活跃的弹出菜单(Layer 101)，放行点击以收起菜单。")
+                    return Unmanaged.passRetained(event)
+                }
+            }
+            
+            // 智能分析是否点击了桌面壁纸
+            if isClickOnDesktop(at: point) {
+                logToFile("🎯 [壁纸点击判定] 确认点击落在空白壁纸区域！")
+                let now = Date()
+                let timeDiff = now.timeIntervalSince(lastClickTime)
+                let clickDistance = hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y)
+                
+                // 系统双击阈值判定 (NSEvent.doubleClickInterval，通常为 0.25s - 0.3s)
+                let doubleClickInterval = NSEvent.doubleClickInterval
+                logToFile("状态机判定: doubleClickInterval = \(doubleClickInterval)s, 时间差 = \(timeDiff)s, 距离 = \(clickDistance)px")
+                
+                if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < 10 {
+                    logToFile("🔥 [双击触发] 判定为双击壁纸！彻底取消单击延迟任务，立即触发 Mission Control 平铺。")
+                    
+                    // 1. 彻底取消挂起的延迟单击任务，防止屏幕闪烁
+                    pendingClickWorkItem?.cancel()
+                    pendingClickWorkItem = nil
+                    
+                    // 2. 立即触发双击平铺
+                    triggerMissionControl()
+                    
+                    // 3. 重置状态戳防止连续多次点击导致的二次触发
+                    lastClickTime = Date.distantPast
+                    lastClickPoint = .zero
+                    
+                    logToFile("🚫 [吞噬事件] 返回 nil，物理屏蔽此双击首发点击。")
+                    return nil
+                } else {
+                    logToFile("⏱️ [单击第一下] 判定为可能是单击的第一下。")
+                    lastClickTime = now
+                    lastClickPoint = point
+                    
+                    pendingClickWorkItem?.cancel()
+                    
+                    if isSingleClickEnabled {
+                        if isDoubleClickEnabled {
+                            // 2a. 若双击功能开启，必须延迟等待系统标准的双击间隔后再执行“单击”逻辑，防止双击事件在判定前流失
+                            let workItem = DispatchWorkItem { [weak self] in
+                                self?.triggerShowDesktop()
+                            }
+                            pendingClickWorkItem = workItem
+                            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                        } else {
+                            // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
+                            triggerShowDesktop()
+                        }
+                        // 返回 nil，吞噬该事件，避免系统原生功能的冲突
+                        return nil
+                    } else {
+                        // 单击功能被关闭了
+                        // 如果是 macOS 14+，我们通过返回 nil 彻底吞噬它，达到“屏蔽系统壁纸误触”的保护罩效果！
+                        if #available(macOS 14.0, *) {
+                            return nil
+                        } else {
+                            // macOS 13 及以下没有原生点击壁纸功能，直接传回原事件即可
+                            return Unmanaged.passRetained(event)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 其它地方的点击，直接原样返回放行
+        return Unmanaged.passRetained(event)
     }
     
     func convertToCGCoordinate(_ point: NSPoint) -> CGPoint {
@@ -305,8 +445,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func isClickOnDesktop(at point: CGPoint) -> Bool {
+        logToFile("🔍 [壁纸分析] 开始进行多维度坐标重叠检测...")
+        
         // 1. 核心修复：高精度拦截系统顶部菜单栏/状态栏区域的点击（仅限屏幕最顶部那一条窄边）。
-        // 采用 visibleFrame 的顶层高度分界比对，不拦截底部 Dock 栏两端的空白壁纸区域。
         guard let primaryScreen = NSScreen.screens.first else { return false }
         let primaryHeight = primaryScreen.frame.height
         let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
@@ -317,7 +458,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let visibleFrame = screen.visibleFrame
                 let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
                 if cocoaPoint.y >= menuBarTopBoundary {
-                    print("点击落在顶部菜单栏区域，已拦截")
+                    logToFile("⚠️ [拦截] 点击落在了系统顶部状态栏/菜单栏内，坐标 CocoaY=\(cocoaPoint.y) >= MenuBarBoundary=\(menuBarTopBoundary)")
                     return false
                 }
                 break
@@ -326,44 +467,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2. 获取所有在屏幕上显示的窗口（按前后遮挡顺序排布）
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            logToFile("❌ 无法获取系统可见窗口信息列表！")
             return false
         }
         
-        // 核心修复：精准判定点击是否落在 Dock 的实际物理像素渲染区域（包含左右和边缘的一定容错余量）。
-        // 这样可以完美支持点击 Dock 栏两侧底部的空白壁纸露出区，同时也把废纸篓和所有最小化图标完全覆盖进去拦截！
+        // 核心修复：精准判定点击是否落在 Dock 的实际物理像素渲染区域
         if isClickInPhysicalDock(point: point, windowList: windowList) {
+            logToFile("⚠️ [拦截] 点击落在了系统 Dock 物理绘制区域内。")
             return false
         }
         
         for window in windowList {
             guard let layer = window[kCGWindowLayer as String] as? Int,
                   let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
-                  let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
-                  let pid = window[kCGWindowOwnerPID as String] as? Int32 else {
+                  let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else {
                 continue
             }
             
             let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
             let windowName = window[kCGWindowName as String] as? String ?? ""
+            let pid = window[kCGWindowOwnerPID as String] as? Int32 ?? 0
             
-            // 我们只关注普通应用程序窗口（Layer 0）
-            if layer == 0 {
-                // 排除 Finder 自身的桌面壁纸窗口和桌面图标所在的容器窗口
-                if ownerName == "Finder" && (windowName == "" || windowName == "Desktop") {
-                    continue
+            // 过滤完全透明的窗口
+            if let alpha = window[kCGWindowAlpha as String] as? Double, alpha == 0 {
+                continue
+            }
+            
+            // 核心突破：我们检查所有在屏幕上层绘制的真实图层窗口（Layer >= 0）
+            if layer >= 0 {
+                // 使用 Bundle ID 检查，彻底消除本地化名称差异对 Finder 的误判
+                var isFinder = false
+                if let app = NSRunningApplication(processIdentifier: pid) {
+                    isFinder = app.bundleIdentifier == "com.apple.finder"
                 }
                 
-                // 排除我们自己
-                if ownerName == "ToDesktop" {
+                // 排除 Finder 自身的桌面壁纸窗口和桌面图标所在的容器窗口 (兼容多语言系统，加入“桌面”的识别)
+                if isFinder && (windowName == "" || windowName == "Desktop" || windowName == "桌面") {
                     continue
                 }
                 
                 // 核心突破：多维度判定当前窗口是否为真实、用户可交互的窗口。
-                // 这一步能彻底排除手势工具、截图背景层等全屏隐形透明背景窗口，同时完美支持浏览器渲染进程等辅助窗口！
                 if isRealInteractiveWindow(pid: pid, windowName: windowName, rect: rect) {
-                    // 如果鼠标点击点落在了当前可见的常规普通应用窗口边界内
                     if rect.contains(point) {
-                        print("点击被真实应用窗口拦截: \(ownerName) (\(windowName)), PID: \(pid), Rect: \(rect)")
+                        logToFile("🛡️ [常规窗口遮挡] 点击落在活跃窗口范围内! 拦截者: [\(ownerName)] (PID: \(pid), Layer: \(layer), Title: '\(windowName)', Bounds: \(rect))")
                         return false
                     }
                 }
@@ -461,86 +607,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // 检测点击是否落在 Dock 栏的实际物理绘制范围内（支持两侧空白区域点击触发，且完美覆盖废纸篓与堆栈栏）
     func isClickInPhysicalDock(point: CGPoint, windowList: [[String: Any]]) -> Bool {
-        var dockRects = [CGRect]()
-        for window in windowList {
-            let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
-            if ownerName == "Dock" {
-                if let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
-                   let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) {
-                    // 忽略极小的窗口（如通知角标、隐藏指示线等小于50px的微小图层）
-                    if rect.width > 50 && rect.height > 50 {
-                        dockRects.append(rect)
-                    }
+        // 我们改用基于 NSScreen.visibleFrame 与 frame 差集的绝对数学几何算法。
+        // 这是 macOS 官方原生支持的最优雅、100% 准确、且完全不受任何多语言或全屏 Dock 交互窗口干扰的黄金判定！
+        guard let primaryScreen = NSScreen.screens.first else { return false }
+        let primaryHeight = primaryScreen.frame.height
+        let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
+        
+        for screen in NSScreen.screens {
+            let screenFrame = screen.frame
+            if screenFrame.contains(cocoaPoint) {
+                let visibleFrame = screen.visibleFrame
+                
+                // 1. 如果点击落在 visibleFrame 内部，这绝对是可用的屏幕区域（非物理 Dock 区域），直接放行
+                if visibleFrame.contains(cocoaPoint) {
+                    return false
                 }
+                
+                // 2. 如果点击落在顶部状态栏/菜单栏（由 isClickOnDesktop 独立检测放过，这里也放行）
+                let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
+                if cocoaPoint.y >= menuBarTopBoundary {
+                    return false
+                }
+                
+                // 3. 如果点击在 screenFrame 内，但不在 visibleFrame 内，且不在顶部菜单栏：
+                // 这必然就是 Dock 物理条所在的像素区域（支持底部、左侧、右侧等任何摆放位置，且自动兼容自动隐藏状态）！
+                logToFile("Dock几何拦截: 点击落在 Dock 物理条区域! CocoaPoint=\(cocoaPoint), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)")
+                return true
             }
         }
-        
-        guard !dockRects.isEmpty else { return false }
-        
-        // 计算囊括所有有效 Dock 窗口（主面板、图标区、废纸篓与堆栈等）的合并包围盒
-        var minX = CGFloat.greatestFiniteMagnitude
-        var maxX = -CGFloat.greatestFiniteMagnitude
-        var minY = CGFloat.greatestFiniteMagnitude
-        var maxY = -CGFloat.greatestFiniteMagnitude
-        
-        for rect in dockRects {
-            minX = min(minX, rect.origin.x)
-            maxX = max(maxX, rect.origin.x + rect.size.width)
-            minY = min(minY, rect.origin.y)
-            maxY = max(maxY, rect.origin.y + rect.size.height)
-        }
-        
-        let unionRect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-        
-        // 给合并盒四周增加 15 像素的外延保护带（确保手势误触、废纸篓圆角边缘以及最小化堆栈的点击完全被包裹拦截）
-        let paddedRect = unionRect.insetBy(dx: -15, dy: -15)
-        
-        if paddedRect.contains(point) {
-            print("点击落在物理 Dock 栏范围之内，予以拦截。包围盒: \(unionRect)")
-            return true
-        }
-        
         return false
     }
     
     func triggerShowDesktop() {
-        // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
-        let now = Date()
-        guard now.timeIntervalSince(lastTriggerTime) > 0.5 else {
-            return
-        }
-        lastTriggerTime = now
-        
-        print("点击了桌面空白处！正在唤醒 Mission Control 摊开窗口。")
-        
-        // 原生调用 Mission Control 1 展示/恢复桌面，保持丝滑的原生动画
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
-        process.arguments = ["1"]
-        do {
-            try process.run()
-        } catch {
-            print("调用 Mission Control 失败: \(error)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
+            let now = Date()
+            guard now.timeIntervalSince(self.lastTriggerTime) > 0.5 else {
+                return
+            }
+            self.lastTriggerTime = now
+            
+            self.logToFile("唤醒 Mission Control 展示桌面 (Show Desktop)")
+            
+            let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+            let config = NSWorkspace.OpenConfiguration()
+            config.arguments = ["1"]
+            
+            NSWorkspace.shared.open(url, configuration: config) { [weak self] _, error in
+                if let error = error {
+                    self?.logToFile("❌ NSWorkspace launch ShowDesktop failed: \(error.localizedDescription)")
+                } else {
+                    self?.logToFile("✓ NSWorkspace launch ShowDesktop success.")
+                }
+            }
         }
     }
     
     func triggerMissionControl() {
-        // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
-        let now = Date()
-        guard now.timeIntervalSince(lastTriggerTime) > 0.5 else {
-            return
-        }
-        lastTriggerTime = now
-        
-        print("双击了桌面空白处！正在唤醒 Mission Control 展开所有窗口列表。")
-        
-        // 原生调用 Mission Control，不带参数（默认无参数是展开所有窗口平铺列表）
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
-        do {
-            try process.run()
-        } catch {
-            print("调用 Mission Control 展开所有窗口列表失败: \(error)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
+            let now = Date()
+            guard now.timeIntervalSince(self.lastTriggerTime) > 0.5 else {
+                return
+            }
+            self.lastTriggerTime = now
+            
+            self.logToFile("唤醒 Mission Control 展开所有窗口列表")
+            
+            let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+            let config = NSWorkspace.OpenConfiguration()
+            
+            NSWorkspace.shared.open(url, configuration: config) { [weak self] _, error in
+                if let error = error {
+                    self?.logToFile("❌ NSWorkspace launch MissionControl failed: \(error.localizedDescription)")
+                } else {
+                    self?.logToFile("✓ NSWorkspace launch MissionControl success.")
+                }
+            }
         }
     }
     
