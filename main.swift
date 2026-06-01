@@ -234,7 +234,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AppDelegate.shared = self
             
             guard let tap = CGEvent.tapCreate(
-                tap: .cghidEventTap,
+                tap: .cgSessionEventTap,
                 place: .headInsertEventTap,
                 options: .defaultTap,
                 eventsOfInterest: eventMask,
@@ -549,43 +549,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func triggerShowDesktop() {
-        // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
-        let now = Date()
-        guard now.timeIntervalSince(lastTriggerTime) > 0.5 else {
-            return
-        }
-        lastTriggerTime = now
-        
-        print("点击了桌面空白处！正在唤醒 Mission Control 摊开窗口。")
-        
-        // 原生调用 Mission Control 1 展示/恢复桌面，保持丝滑的原生动画
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
-        process.arguments = ["1"]
-        do {
-            try process.run()
-        } catch {
-            print("调用 Mission Control 失败: \(error)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
+            let now = Date()
+            guard now.timeIntervalSince(self.lastTriggerTime) > 0.5 else {
+                return
+            }
+            self.lastTriggerTime = now
+            
+            print("点击了桌面空白处！正在唤醒 Mission Control 摊开窗口。")
+            
+            // 原生调用 Mission Control 1 展示/恢复桌面，保持丝滑的原生动画
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
+            process.arguments = ["1"]
+            do {
+                try process.run()
+            } catch {
+                print("调用 Mission Control 失败: \(error)")
+            }
         }
     }
     
     func triggerMissionControl() {
-        // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
-        let now = Date()
-        guard now.timeIntervalSince(lastTriggerTime) > 0.5 else {
-            return
-        }
-        lastTriggerTime = now
-        
-        print("双击了桌面空白处！正在唤醒 Mission Control 展开所有窗口列表。")
-        
-        // 原生调用 Mission Control，不带参数（默认无参数是展开所有窗口平铺列表）
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
-        do {
-            try process.run()
-        } catch {
-            print("调用 Mission Control 展开所有窗口列表失败: \(error)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // 限流防抖：每次触发最小间隔为 0.5 秒，防止连续误触导致窗口动画闪烁
+            let now = Date()
+            guard now.timeIntervalSince(self.lastTriggerTime) > 0.5 else {
+                return
+            }
+            self.lastTriggerTime = now
+            
+            print("双击了桌面空白处！正在唤醒 Mission Control 展开所有窗口列表。")
+            
+            // 原生调用 Mission Control，不带参数（默认无参数是展开所有窗口平铺列表）
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
+            do {
+                try process.run()
+            } catch {
+                print("调用 Mission Control 展开所有窗口列表失败: \(error)")
+            }
         }
     }
     
