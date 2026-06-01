@@ -3,8 +3,12 @@ import CoreGraphics
 import ApplicationServices
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: AppDelegate?
+    
     var statusItem: NSStatusItem!
-    var globalMonitor: Any?
+    var eventTap: CFMachPort?
+    var runLoopSource: CFRunLoopSource?
+    
     var isSingleClickEnabled: Bool = true
     var isDoubleClickEnabled: Bool = true
     var lastTriggerTime: Date = Date.distantPast
@@ -12,6 +16,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var pendingClickWorkItem: DispatchWorkItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.shared = self
+        
         // 从 UserDefaults 加载用户偏好设置，若不存在则默认为 true
         if UserDefaults.standard.object(forKey: "isSingleClickEnabled") == nil {
             UserDefaults.standard.set(true, forKey: "isSingleClickEnabled")
@@ -83,8 +89,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func buildMenu() {
         let menu = NSMenu()
         
-        // 1. 单击开关项
-        let singleClickItem = NSMenuItem(title: "🖥️ 单击壁纸展示桌面", action: #selector(toggleSingleClick), keyEquivalent: "s")
+        let is14OrAbove: Bool
+        if #available(macOS 14.0, *) {
+            is14OrAbove = true
+        } else {
+            is14OrAbove = false
+        }
+        
+        // 1. 单击开关项 (动态文案)
+        let singleClickTitle: String
+        if isSingleClickEnabled {
+            singleClickTitle = "🖥️ 单击壁纸展示桌面"
+        } else {
+            if is14OrAbove {
+                singleClickTitle = "🛡️ 屏蔽系统壁纸误触 (推荐)"
+            } else {
+                singleClickTitle = "🖥️ 关闭单击壁纸展示桌面"
+            }
+        }
+        
+        let singleClickItem = NSMenuItem(title: singleClickTitle, action: #selector(toggleSingleClick), keyEquivalent: "s")
         singleClickItem.state = isSingleClickEnabled ? .on : .off
         menu.addItem(singleClickItem)
         
@@ -167,7 +191,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 ToDesktop"
-        alert.informativeText = "ToDesktop v0.2.0\n专为 macOS 12/13/14+ 系统开发的桌面快速展示工具。\n\n点击屏幕空白壁纸即可快速摊开所有窗口露出桌面，再次点击桌面试图可恢复原样。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "ToDesktop v0.2.1\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -201,59 +225,111 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func startMonitoring() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard self.globalMonitor == nil && (self.isSingleClickEnabled || self.isDoubleClickEnabled) else { return }
+            guard self.eventTap == nil && (self.isSingleClickEnabled || self.isDoubleClickEnabled) else { return }
             
-            self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-                self?.handleGlobalClick(event)
+            let eventMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+            
+            AppDelegate.shared = self
+            
+            guard let tap = CGEvent.tapCreate(
+                tap: .cghidEventTap,
+                place: .headInsertEventTap,
+                options: .defaultTap,
+                eventsOfInterest: eventMask,
+                callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+                    guard let delegate = AppDelegate.shared else {
+                        return Unmanaged.passRetained(event)
+                    }
+                    return delegate.handleCGEvent(proxy: proxy, type: type, event: event)
+                },
+                userInfo: nil
+            ) else {
+                print("创建 CGEventTap 失败，请检查是否已获得系统辅助功能权限")
+                return
             }
-            print("已成功在主线程异步开启全局点击监听")
+            
+            self.eventTap = tap
+            self.runLoopSource = autoreleasepool {
+                CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            }
+            
+            if let source = self.runLoopSource {
+                CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+            }
+            
+            CGEvent.tapEnable(tap: tap, enable: true)
+            print("已成功在主线程异步开启 CGEventTap 主动过滤监听")
         }
     }
     
     func stopMonitoring() {
-        if let monitor = globalMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalMonitor = nil
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let source = runLoopSource {
+                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            }
+            eventTap = nil
+            runLoopSource = nil
         }
-        print("已关闭全局点击监听")
+        print("已关闭 CGEventTap 主动过滤监听")
     }
     
-    func handleGlobalClick(_ event: NSEvent) {
-        // 获取当前鼠标位置 (Y 轴从屏幕底部向上增加)
-        let mouseLocation = NSEvent.mouseLocation
-        
-        // 转换为 CG 坐标系 (Y 轴从屏幕顶部向下增加)
-        let clickPoint = convertToCGCoordinate(mouseLocation)
-        
-        // 智能分析是否点击了桌面壁纸
-        guard isClickOnDesktop(at: clickPoint) else { return }
-        
-        let clickCount = event.clickCount
-        
-        if clickCount == 2 && isDoubleClickEnabled {
-            // 1. 彻底取消挂起的“单击显示桌面”任务，防止屏幕闪烁
-            pendingClickWorkItem?.cancel()
-            pendingClickWorkItem = nil
+    func handleCGEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .leftMouseDown {
+            let point = event.location
             
-            // 2. 立即触发“双击展开所有窗口列表”
-            triggerMissionControl()
-        } else if clickCount == 1 && isSingleClickEnabled {
-            // 1. 取消上一次可能存在的单/双击残留任务以防重合
-            pendingClickWorkItem?.cancel()
-            
-            if isDoubleClickEnabled {
-                // 2a. 若双击功能开启，延迟 0.25 秒（黄金时延）再执行“单击”逻辑，等待双击判定
-                let delay = 0.25
-                let workItem = DispatchWorkItem { [weak self] in
-                    self?.triggerShowDesktop()
+            // 智能分析是否点击了桌面壁纸
+            if isClickOnDesktop(at: point) {
+                // 将 CGEvent 转换为 NSEvent 以方便获取 clickCount
+                if let nsEvent = NSEvent(cgEvent: event) {
+                    let clickCount = nsEvent.clickCount
+                    
+                    if clickCount == 2 && isDoubleClickEnabled {
+                        // 1. 彻底取消挂起的“单击显示桌面”任务，防止屏幕闪烁
+                        pendingClickWorkItem?.cancel()
+                        pendingClickWorkItem = nil
+                        
+                        // 2. 立即触发“双击展开所有窗口列表”
+                        triggerMissionControl()
+                        
+                        // 3. 返回 nil，彻底吞噬该事件，不传给系统，避免双击时的闪烁
+                        return nil
+                    } else if clickCount == 1 {
+                        // 1. 取消上一次可能存在的单/双击残留任务以防重合
+                        pendingClickWorkItem?.cancel()
+                        
+                        if isSingleClickEnabled {
+                            if isDoubleClickEnabled {
+                                // 2a. 若双击功能开启，延迟 0.25 秒（黄金时延）再执行“单击”逻辑，等待双击判定
+                                let delay = 0.25
+                                let workItem = DispatchWorkItem { [weak self] in
+                                    self?.triggerShowDesktop()
+                                }
+                                pendingClickWorkItem = workItem
+                                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+                            } else {
+                                // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
+                                triggerShowDesktop()
+                            }
+                            // 返回 nil，吞噬该事件，避免系统原生功能的冲突
+                            return nil
+                        } else {
+                            // 单击功能被关闭了
+                            // 如果是 macOS 14+，我们通过返回 nil 彻底吞噬它，达到“屏蔽系统壁纸误触”的保护罩效果！
+                            if #available(macOS 14.0, *) {
+                                return nil
+                            } else {
+                                // macOS 13 及以下没有原生点击壁纸功能，直接传回原事件即可
+                                return Unmanaged.passRetained(event)
+                            }
+                        }
+                    }
                 }
-                pendingClickWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-            } else {
-                // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
-                triggerShowDesktop()
             }
         }
+        
+        // 其它地方的点击，直接原样返回放行
+        return Unmanaged.passRetained(event)
     }
     
     func convertToCGCoordinate(_ point: NSPoint) -> CGPoint {
