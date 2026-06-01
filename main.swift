@@ -15,6 +15,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var permissionTimer: Timer?
     var pendingClickWorkItem: DispatchWorkItem?
     
+    // 自研的高保真双击判定状态机属性，摆脱系统 swallowing 事件后 clickCount 被重置的 bug
+    var lastClickTime: Date = Date.distantPast
+    var lastClickPoint: CGPoint = .zero
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         
@@ -34,11 +38,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 2. 检查并请求辅助功能权限
         let hasAccess = checkAccessibility(prompt: false)
-        let shouldMonitor = hasAccess && (isSingleClickEnabled || isDoubleClickEnabled)
         
-        if shouldMonitor {
+        if hasAccess {
             startMonitoring()
-        } else if !hasAccess {
+        } else {
             promptForAccessibility()
             startPermissionPolling()
         }
@@ -55,10 +58,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.permissionTimer?.invalidate()
                 self.permissionTimer = nil
                 
-                let shouldMonitor = self.isSingleClickEnabled || self.isDoubleClickEnabled
-                if shouldMonitor {
-                    self.startMonitoring()
-                }
+                self.startMonitoring()
                 self.buildMenu()
                 print("🎉 自动检测到系统辅助功能权限已开通，全局监听已激活！")
             }
@@ -98,18 +98,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 1. 单击开关项 (动态文案)
         let singleClickTitle: String
+        let singleClickState: NSControl.StateValue
         if isSingleClickEnabled {
             singleClickTitle = "🖥️ 单击壁纸展示桌面"
+            singleClickState = .on
         } else {
             if is14OrAbove {
                 singleClickTitle = "🛡️ 屏蔽系统壁纸误触 (推荐)"
+                singleClickState = .on // 屏蔽罩处于激活状态，保持勾选以示工作状态正常
             } else {
                 singleClickTitle = "🖥️ 关闭单击壁纸展示桌面"
+                singleClickState = .off
             }
         }
         
         let singleClickItem = NSMenuItem(title: singleClickTitle, action: #selector(toggleSingleClick), keyEquivalent: "s")
-        singleClickItem.state = isSingleClickEnabled ? .on : .off
+        singleClickItem.state = singleClickState
         menu.addItem(singleClickItem)
         
         // 2. 双击开关项
@@ -160,9 +164,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func updateMonitoringState() {
         let hasAccess = checkAccessibility(prompt: false)
-        let shouldMonitor = hasAccess && (isSingleClickEnabled || isDoubleClickEnabled)
-        
-        if shouldMonitor {
+        if hasAccess {
             startMonitoring()
         } else {
             stopMonitoring()
@@ -225,7 +227,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func startMonitoring() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard self.eventTap == nil && (self.isSingleClickEnabled || self.isDoubleClickEnabled) else { return }
+            guard self.eventTap == nil else { return }
             
             let eventMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
             
@@ -280,48 +282,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             // 智能分析是否点击了桌面壁纸
             if isClickOnDesktop(at: point) {
-                // 将 CGEvent 转换为 NSEvent 以方便获取 clickCount
-                if let nsEvent = NSEvent(cgEvent: event) {
-                    let clickCount = nsEvent.clickCount
+                let now = Date()
+                let timeDiff = now.timeIntervalSince(lastClickTime)
+                let clickDistance = hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y)
+                
+                // 系统双击阈值判定 (NSEvent.doubleClickInterval，通常为 0.25s - 0.3s)
+                let doubleClickInterval = NSEvent.doubleClickInterval
+                
+                if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < 10 {
+                    // 【高保真判定为双击】
                     
-                    if clickCount == 2 && isDoubleClickEnabled {
-                        // 1. 彻底取消挂起的“单击显示桌面”任务，防止屏幕闪烁
-                        pendingClickWorkItem?.cancel()
-                        pendingClickWorkItem = nil
-                        
-                        // 2. 立即触发“双击展开所有窗口列表”
-                        triggerMissionControl()
-                        
-                        // 3. 返回 nil，彻底吞噬该事件，不传给系统，避免双击时的闪烁
-                        return nil
-                    } else if clickCount == 1 {
-                        // 1. 取消上一次可能存在的单/双击残留任务以防重合
-                        pendingClickWorkItem?.cancel()
-                        
-                        if isSingleClickEnabled {
-                            if isDoubleClickEnabled {
-                                // 2a. 若双击功能开启，延迟 0.25 秒（黄金时延）再执行“单击”逻辑，等待双击判定
-                                let delay = 0.25
-                                let workItem = DispatchWorkItem { [weak self] in
-                                    self?.triggerShowDesktop()
-                                }
-                                pendingClickWorkItem = workItem
-                                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-                            } else {
-                                // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
-                                triggerShowDesktop()
+                    // 1. 彻底取消挂起的延迟单击任务，防止屏幕闪烁
+                    pendingClickWorkItem?.cancel()
+                    pendingClickWorkItem = nil
+                    
+                    // 2. 立即触发双击平铺
+                    triggerMissionControl()
+                    
+                    // 3. 重置状态戳防止连续多次点击导致的二次触发
+                    lastClickTime = Date.distantPast
+                    lastClickPoint = .zero
+                    
+                    return nil
+                } else {
+                    // 【判定为单击的第一下】
+                    lastClickTime = now
+                    lastClickPoint = point
+                    
+                    pendingClickWorkItem?.cancel()
+                    
+                    if isSingleClickEnabled {
+                        if isDoubleClickEnabled {
+                            // 2a. 若双击功能开启，必须延迟等待系统标准的双击间隔后再执行“单击”逻辑，防止双击事件在判定前流失
+                            let workItem = DispatchWorkItem { [weak self] in
+                                self?.triggerShowDesktop()
                             }
-                            // 返回 nil，吞噬该事件，避免系统原生功能的冲突
+                            pendingClickWorkItem = workItem
+                            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                        } else {
+                            // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
+                            triggerShowDesktop()
+                        }
+                        // 返回 nil，吞噬该事件，避免系统原生功能的冲突
+                        return nil
+                    } else {
+                        // 单击功能被关闭了
+                        // 如果是 macOS 14+，我们通过返回 nil 彻底吞噬它，达到“屏蔽系统壁纸误触”的保护罩效果！
+                        if #available(macOS 14.0, *) {
                             return nil
                         } else {
-                            // 单击功能被关闭了
-                            // 如果是 macOS 14+，我们通过返回 nil 彻底吞噬它，达到“屏蔽系统壁纸误触”的保护罩效果！
-                            if #available(macOS 14.0, *) {
-                                return nil
-                            } else {
-                                // macOS 13 及以下没有原生点击壁纸功能，直接传回原事件即可
-                                return Unmanaged.passRetained(event)
-                            }
+                            // macOS 13 及以下没有原生点击壁纸功能，直接传回原事件即可
+                            return Unmanaged.passRetained(event)
                         }
                     }
                 }
