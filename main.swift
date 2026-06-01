@@ -242,12 +242,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     continue
                 }
                 
-                // 核心突破：利用 NSRunningApplication 检查窗口所有者是否为标准常规 GUI 应用程序。
-                // 这一步能彻底排除输入法、手势工具、截图挂件、系统通知等后台运行的“全屏隐形透明窗口”！
-                if isRegularApplication(pid: pid) {
+                // 核心突破：多维度判定当前窗口是否为真实、用户可交互的窗口。
+                // 这一步能彻底排除手势工具、截图背景层等全屏隐形透明背景窗口，同时完美支持浏览器渲染进程等辅助窗口！
+                if isRealInteractiveWindow(pid: pid, windowName: windowName, rect: rect) {
                     // 如果鼠标点击点落在了当前可见的常规普通应用窗口边界内
                     if rect.contains(point) {
-                        print("点击被常规应用拦截: \(ownerName) (\(windowName)), PID: \(pid), Rect: \(rect)")
+                        print("点击被真实应用窗口拦截: \(ownerName) (\(windowName)), PID: \(pid), Rect: \(rect)")
                         return false
                     }
                 }
@@ -307,6 +307,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func isRegularApplication(pid: Int32) -> Bool {
         if let app = NSRunningApplication(processIdentifier: pid) {
             return app.activationPolicy == .regular
+        }
+        return false
+    }
+    
+    // 多维度判定窗口是否为真实、用户可交互的窗口
+    func isRealInteractiveWindow(pid: Int32, windowName: String, rect: CGRect) -> Bool {
+        // 1. 如果是标准的常规前台 GUI 应用程序，那绝对是真实交互窗口
+        if isRegularApplication(pid: pid) {
+            return true
+        }
+        
+        // 2. 如果窗口有非空的标题，几乎可以肯定是真实窗口（如浏览器弹窗、特定辅助界面、辅助软件的主窗口等）
+        if !windowName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        
+        // 3. 如果窗口尺寸不是全屏的，说明是小型浮动面板（如输入法候选词框、悬浮小挂件、Spotlight 搜索栏等），也是真实可交互窗口
+        if !isFullscreen(rect: rect) {
+            return true
+        }
+        
+        // 其它情况（非常规应用 + 无标题 + 全屏尺寸）：大概率是手势软件全局抓取层、壁纸渲染层等“全屏隐形透明窗口”，不视为真实可交互窗口
+        return false
+    }
+    
+    // 检测窗口是否等于任意一个物理显示器的全屏尺寸（允许 2 像素以内的误差以兼容多屏幕分界线偏移）
+    func isFullscreen(rect: CGRect) -> Bool {
+        for screen in NSScreen.screens {
+            let screenFrame = screen.frame
+            if abs(rect.width - screenFrame.width) < 2 && abs(rect.height - screenFrame.height) < 2 {
+                return true
+            }
         }
         return false
     }
