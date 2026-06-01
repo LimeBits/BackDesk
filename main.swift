@@ -196,8 +196,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func isClickOnDesktop(at point: CGPoint) -> Bool {
-        // 1. 核心修复：高精度拦截系统 Dock 栏和顶部菜单栏/状态栏区域的点击。
-        // 通过 visibleFrame 与 frame 的差集做比对，天然免疫 Dock 在屏幕任意位置（底部/左侧/右侧）、废纸篓、最小化窗口以及任何多显示器缩放的分界。
+        // 1. 核心修复：高精度拦截系统顶部菜单栏/状态栏区域的点击（仅限屏幕最顶部那一条窄边）。
+        // 采用 visibleFrame 的顶层高度分界比对，不拦截底部 Dock 栏两端的空白壁纸区域。
         guard let primaryScreen = NSScreen.screens.first else { return false }
         let primaryHeight = primaryScreen.frame.height
         let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
@@ -206,8 +206,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let screenFrame = screen.frame
             if screenFrame.contains(cocoaPoint) {
                 let visibleFrame = screen.visibleFrame
-                if !visibleFrame.contains(cocoaPoint) {
-                    print("点击落在系统保留区域外（Dock栏 或 菜单栏），已拦截")
+                let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
+                if cocoaPoint.y >= menuBarTopBoundary {
+                    print("点击落在顶部菜单栏区域，已拦截")
                     return false
                 }
                 break
@@ -216,6 +217,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2. 获取所有在屏幕上显示的窗口（按前后遮挡顺序排布）
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        
+        // 核心修复：精准判定点击是否落在 Dock 的实际物理像素渲染区域（包含左右和边缘的一定容错余量）。
+        // 这样可以完美支持点击 Dock 栏两侧底部的空白壁纸露出区，同时也把废纸篓和所有最小化图标完全覆盖进去拦截！
+        if isClickInPhysicalDock(point: point, windowList: windowList) {
             return false
         }
         
@@ -340,6 +347,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return true
             }
         }
+        return false
+    }
+    
+    // 检测点击是否落在 Dock 栏的实际物理绘制范围内（支持两侧空白区域点击触发，且完美覆盖废纸篓与堆栈栏）
+    func isClickInPhysicalDock(point: CGPoint, windowList: [[String: Any]]) -> Bool {
+        var dockRects = [CGRect]()
+        for window in windowList {
+            let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
+            if ownerName == "Dock" {
+                if let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                   let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) {
+                    // 忽略极小的窗口（如通知角标、隐藏指示线等小于50px的微小图层）
+                    if rect.width > 50 && rect.height > 50 {
+                        dockRects.append(rect)
+                    }
+                }
+            }
+        }
+        
+        guard !dockRects.isEmpty else { return false }
+        
+        // 计算囊括所有有效 Dock 窗口（主面板、图标区、废纸篓与堆栈等）的合并包围盒
+        var minX = CGFloat.greatestFiniteMagnitude
+        var maxX = -CGFloat.greatestFiniteMagnitude
+        var minY = CGFloat.greatestFiniteMagnitude
+        var maxY = -CGFloat.greatestFiniteMagnitude
+        
+        for rect in dockRects {
+            minX = min(minX, rect.origin.x)
+            maxX = max(maxX, rect.origin.x + rect.size.width)
+            minY = min(minY, rect.origin.y)
+            maxY = max(maxY, rect.origin.y + rect.size.height)
+        }
+        
+        let unionRect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        
+        // 给合并盒四周增加 15 像素的外延保护带（确保手势误触、废纸篓圆角边缘以及最小化堆栈的点击完全被包裹拦截）
+        let paddedRect = unionRect.insetBy(dx: -15, dy: -15)
+        
+        if paddedRect.contains(point) {
+            print("点击落在物理 Dock 栏范围之内，予以拦截。包围盒: \(unionRect)")
+            return true
+        }
+        
         return false
     }
     
