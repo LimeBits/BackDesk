@@ -5,20 +5,34 @@ import ApplicationServices
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var globalMonitor: Any?
-    var isEnabled: Bool = true
+    var isSingleClickEnabled: Bool = true
+    var isDoubleClickEnabled: Bool = true
     var lastTriggerTime: Date = Date.distantPast
     var permissionTimer: Timer?
     var pendingClickWorkItem: DispatchWorkItem?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 从 UserDefaults 加载用户偏好设置，若不存在则默认为 true
+        if UserDefaults.standard.object(forKey: "isSingleClickEnabled") == nil {
+            UserDefaults.standard.set(true, forKey: "isSingleClickEnabled")
+        }
+        if UserDefaults.standard.object(forKey: "isDoubleClickEnabled") == nil {
+            UserDefaults.standard.set(true, forKey: "isDoubleClickEnabled")
+        }
+        
+        isSingleClickEnabled = UserDefaults.standard.bool(forKey: "isSingleClickEnabled")
+        isDoubleClickEnabled = UserDefaults.standard.bool(forKey: "isDoubleClickEnabled")
+        
         // 1. 创建状态栏图标与菜单
         setupStatusItem()
         
         // 2. 检查并请求辅助功能权限
         let hasAccess = checkAccessibility(prompt: false)
-        if hasAccess {
+        let shouldMonitor = hasAccess && (isSingleClickEnabled || isDoubleClickEnabled)
+        
+        if shouldMonitor {
             startMonitoring()
-        } else {
+        } else if !hasAccess {
             promptForAccessibility()
             startPermissionPolling()
         }
@@ -30,10 +44,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         permissionTimer?.invalidate()
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            if self.checkAccessibility(prompt: false) {
+            let hasAccess = self.checkAccessibility(prompt: false)
+            if hasAccess {
                 self.permissionTimer?.invalidate()
                 self.permissionTimer = nil
-                self.startMonitoring()
+                
+                let shouldMonitor = self.isSingleClickEnabled || self.isDoubleClickEnabled
+                if shouldMonitor {
+                    self.startMonitoring()
+                }
                 self.buildMenu()
                 print("🎉 自动检测到系统辅助功能权限已开通，全局监听已激活！")
             }
@@ -64,10 +83,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func buildMenu() {
         let menu = NSMenu()
         
-        // 功能开关项
-        let toggleItem = NSMenuItem(title: "启用桌面壁纸点击", action: #selector(toggleFeature), keyEquivalent: "e")
-        toggleItem.state = isEnabled ? .on : .off
-        menu.addItem(toggleItem)
+        // 1. 单击开关项
+        let singleClickItem = NSMenuItem(title: "🖥️ 单击壁纸展示桌面", action: #selector(toggleSingleClick), keyEquivalent: "s")
+        singleClickItem.state = isSingleClickEnabled ? .on : .off
+        menu.addItem(singleClickItem)
+        
+        // 2. 双击开关项
+        let doubleClickItem = NSMenuItem(title: "🎴 双击壁纸平铺窗口", action: #selector(toggleDoubleClick), keyEquivalent: "d")
+        doubleClickItem.state = isDoubleClickEnabled ? .on : .off
+        menu.addItem(doubleClickItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -94,14 +118,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     // MARK: - 菜单事件响应
-    @objc func toggleFeature() {
-        isEnabled.toggle()
-        if isEnabled {
+    @objc func toggleSingleClick() {
+        isSingleClickEnabled.toggle()
+        UserDefaults.standard.set(isSingleClickEnabled, forKey: "isSingleClickEnabled")
+        
+        updateMonitoringState()
+        buildMenu()
+    }
+    
+    @objc func toggleDoubleClick() {
+        isDoubleClickEnabled.toggle()
+        UserDefaults.standard.set(isDoubleClickEnabled, forKey: "isDoubleClickEnabled")
+        
+        updateMonitoringState()
+        buildMenu()
+    }
+    
+    func updateMonitoringState() {
+        let hasAccess = checkAccessibility(prompt: false)
+        let shouldMonitor = hasAccess && (isSingleClickEnabled || isDoubleClickEnabled)
+        
+        if shouldMonitor {
             startMonitoring()
         } else {
             stopMonitoring()
         }
-        buildMenu()
     }
     
     @objc func requestAuth() {
@@ -160,7 +201,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func startMonitoring() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard self.globalMonitor == nil && self.isEnabled else { return }
+            guard self.globalMonitor == nil && (self.isSingleClickEnabled || self.isDoubleClickEnabled) else { return }
             
             self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
                 self?.handleGlobalClick(event)
@@ -189,25 +230,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let clickCount = event.clickCount
         
-        if clickCount == 2 {
+        if clickCount == 2 && isDoubleClickEnabled {
             // 1. 彻底取消挂起的“单击显示桌面”任务，防止屏幕闪烁
             pendingClickWorkItem?.cancel()
             pendingClickWorkItem = nil
             
             // 2. 立即触发“双击展开所有窗口列表”
             triggerMissionControl()
-        } else if clickCount == 1 {
+        } else if clickCount == 1 && isSingleClickEnabled {
             // 1. 取消上一次可能存在的单/双击残留任务以防重合
             pendingClickWorkItem?.cancel()
             
-            // 2. 延迟系统标准的双击时间间隔再执行“单击”逻辑
-            let delay = NSEvent.doubleClickInterval
-            let workItem = DispatchWorkItem { [weak self] in
-                self?.triggerShowDesktop()
+            if isDoubleClickEnabled {
+                // 2a. 若双击功能开启，延迟 0.25 秒（黄金时延）再执行“单击”逻辑，等待双击判定
+                let delay = 0.25
+                let workItem = DispatchWorkItem { [weak self] in
+                    self?.triggerShowDesktop()
+                }
+                pendingClickWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+            } else {
+                // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
+                triggerShowDesktop()
             }
-            pendingClickWorkItem = workItem
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
         }
     }
     
