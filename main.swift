@@ -209,6 +209,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
             let windowName = window[kCGWindowName as String] as? String ?? ""
             
+            // 核心修复 2: 拦截点击落在系统 Dock 栏以及系统菜单栏/通知中心区域
+            if ownerName == "Dock" || ownerName == "SystemUIServer" || ownerName == "ControlCenter" {
+                if rect.contains(point) {
+                    print("点击被系统服务窗口拦截: \(ownerName), Rect: \(rect)")
+                    return false
+                }
+            }
+            
             // 我们只关注普通应用程序窗口（Layer 0）
             if layer == 0 {
                 // 排除 Finder 自身的桌面壁纸窗口和桌面图标所在的容器窗口
@@ -233,7 +241,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        // 没有落在任何普通活动窗口上，意味着用户点击了桌面空白壁纸区域！
+        // 核心修复 1: 利用 Accessibility API 深度判断鼠标是否落在了 Finder 桌面文件/文件夹图标上
+        let systemWide = AXUIElementCreateSystemWide()
+        var element: AXUIElement?
+        let axResult = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
+        
+        if axResult == .success, let clickedElement = element {
+            var elementPid: pid_t = 0
+            if AXUIElementGetPid(clickedElement, &elementPid) == .success {
+                if let app = NSRunningApplication(processIdentifier: elementPid) {
+                    let bundleId = app.bundleIdentifier ?? ""
+                    
+                    // 如果点击的元素属于 Finder 进程
+                    if bundleId == "com.apple.finder" {
+                        var roleValue: AnyObject?
+                        AXUIElementCopyAttributeValue(clickedElement, kAXRoleAttribute as CFString, &roleValue)
+                        if let role = roleValue as? String {
+                            // 桌面图标的文件名是 AXStaticText，图标图片是 AXImage
+                            if role == "AXStaticText" || role == "AXImage" || role == "AXButton" {
+                                print("点击落在桌面文件或文件夹图标上 (Role: \(role))，已拦截")
+                                return false
+                            }
+                        }
+                    }
+                    
+                    // 双重保障：若是点击了 Dock 栏或其他系统元素
+                    if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
+                        print("点击落在系统特权进程元素上 (\(bundleId))，已拦截")
+                        return false
+                    }
+                }
+            }
+        }
+        
+        // 没有落在任何普通活动窗口、系统栏或桌面文件图标上，意味着用户点击了桌面空白壁纸区域！
         return true
     }
     
