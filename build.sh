@@ -3,7 +3,7 @@
 # 确保脚本发生任何错误时立即退出
 set -e
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 APP_NAME="ToDesktop"
 BUILD_DIR="build"
 

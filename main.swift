@@ -249,7 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 ToDesktop"
-        alert.informativeText = "ToDesktop v0.2.1\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "ToDesktop v0.2.2\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
