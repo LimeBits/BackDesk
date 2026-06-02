@@ -67,10 +67,10 @@ graph TD
 ./build.sh
 ```
 **编译产物**：
-脚本执行成功后，您将在项目根目录下获得针对不同芯片架构编译的 3 款 `.zip` 和 3 款高质感 `.dmg` 磁盘镜像（推荐直接使用通用版 `ToDesktop_v0.1.0_universal.dmg`）。
+脚本执行成功后，您将在项目根目录下获得针对不同芯片架构编译的 3 款 `.zip` 和 3 款高质感 `.dmg` 镜像（推荐直接使用通用版 `ToDesktop_v0.2.3_universal.dmg`）。
 
 ### 2. 安装与运行
-1. 双击打开 `ToDesktop_v0.1.0_universal.dmg`；
+1. 双击打开 `ToDesktop_v0.2.3_universal.dmg`；
 2. 将 `ToDesktop.app` 图标拖入右侧的 `Applications`（应用程序）文件夹中；
 3. 打开 Launchpad 或应用程序文件夹，双击运行 **`ToDesktop`**。
 4. 顶部状态栏会常驻 🖥️ 图标，点击可勾选「开机自动启动」或查看辅助功能授权状态。

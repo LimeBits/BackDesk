@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var eventTap: CFMachPort?
     var runLoopSource: CFRunLoopSource?
+    var globalMonitor: Any?
     
     var isSingleClickEnabled: Bool = true
     var isDoubleClickEnabled: Bool = true
@@ -301,56 +302,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func startMonitoring() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard self.eventTap == nil else { return }
             
-            self.logToFile("🔄 准备异步创建 CGEventTap 事件过滤器...")
-            
-            let eventMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
-            
-            AppDelegate.shared = self
-            
-            guard let tap = CGEvent.tapCreate(
-                tap: .cgSessionEventTap,
-                place: .headInsertEventTap,
-                options: .defaultTap,
-                eventsOfInterest: eventMask,
-                callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
-                    guard let delegate = AppDelegate.shared else {
-                        return Unmanaged.passRetained(event)
-                    }
-                    return delegate.handleCGEvent(proxy: proxy, type: type, event: event)
-                },
-                userInfo: nil
-            ) else {
-                self.logToFile("❌ 创建 CGEventTap 失败！系统辅助功能授权静默失效，显示警告向导。")
-                self.showAccessibilityErrorAlert()
-                return
+            if #available(macOS 14.0, *) {
+                guard self.eventTap == nil else { return }
+                self.logToFile("🔄 准备异步创建 CGEventTap 事件过滤器...")
+                
+                let eventMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+                AppDelegate.shared = self
+                
+                guard let tap = CGEvent.tapCreate(
+                    tap: .cgSessionEventTap,
+                    place: .headInsertEventTap,
+                    options: .defaultTap,
+                    eventsOfInterest: eventMask,
+                    callback: { (proxy, type, event, refcon) -> Unmanaged<CGEvent>? in
+                        guard let delegate = AppDelegate.shared else {
+                            return Unmanaged.passRetained(event)
+                        }
+                        return delegate.handleCGEvent(proxy: proxy, type: type, event: event)
+                    },
+                    userInfo: nil
+                ) else {
+                    self.logToFile("❌ 创建 CGEventTap 失败！系统辅助功能授权静默失效，显示警告向导。")
+                    self.showAccessibilityErrorAlert()
+                    return
+                }
+                
+                self.eventTap = tap
+                self.runLoopSource = autoreleasepool {
+                    CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+                }
+                
+                if let source = self.runLoopSource {
+                    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+                }
+                
+                CGEvent.tapEnable(tap: tap, enable: true)
+                self.logToFile("🎉 [EventTap] 已成功启用，开始截获系统鼠标左键按下事件监控。")
+            } else {
+                // macOS 13 及以下直接使用极稳定全局监听机制，不需也不应使用 CGEventTap
+                guard self.globalMonitor == nil else { return }
+                self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                    self?.handleGlobalClick(event)
+                }
+                self.logToFile("🎉 [GlobalMonitor] 已成功开启 macOS 13 及以下版本全局点击监听。")
             }
-            
-            self.eventTap = tap
-            self.runLoopSource = autoreleasepool {
-                CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-            }
-            
-            if let source = self.runLoopSource {
-                CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-            }
-            
-            CGEvent.tapEnable(tap: tap, enable: true)
-            self.logToFile("🎉 [EventTap] 已成功启用，开始截获系统鼠标左键按下事件监控。")
         }
     }
     
     func stopMonitoring() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            if let source = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+        if #available(macOS 14.0, *) {
+            if let tap = eventTap {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                if let source = runLoopSource {
+                    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+                }
+                eventTap = nil
+                runLoopSource = nil
             }
-            eventTap = nil
-            runLoopSource = nil
+            print("已关闭 CGEventTap 主动过滤监听")
+        } else {
+            if let monitor = globalMonitor {
+                NSEvent.removeMonitor(monitor)
+                globalMonitor = nil
+            }
+            print("已关闭全局点击监听")
         }
-        print("已关闭 CGEventTap 主动过滤监听")
     }
     
     func handleCGEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -438,10 +455,108 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return Unmanaged.passRetained(event)
     }
     
+    func handleGlobalClick(_ event: NSEvent) {
+        // 获取当前鼠标位置 (Y 轴从屏幕底部向上增加)
+        let mouseLocation = NSEvent.mouseLocation
+        
+        // 转换为 CG 坐标系 (Y 轴从屏幕顶部向下增加)
+        let clickPoint = convertToCGCoordinate(mouseLocation)
+        
+        logToFile("鼠标左键按下，位置坐标: \(clickPoint)")
+        
+        if isClickOnDesktop(at: clickPoint) {
+            logToFile("🎯 [macOS 13 壁纸点击判定] 确认点击落在空白壁纸区域！")
+            let now = Date()
+            let timeDiff = now.timeIntervalSince(lastClickTime)
+            let clickDistance = hypot(clickPoint.x - lastClickPoint.x, clickPoint.y - lastClickPoint.y)
+            
+            let doubleClickInterval = NSEvent.doubleClickInterval
+            
+            if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < 10 {
+                logToFile("🔥 [macOS 13 双击触发] 判定为双击壁纸！彻底取消单击延迟任务，立即触发 Mission Control 平铺。")
+                pendingClickWorkItem?.cancel()
+                pendingClickWorkItem = nil
+                
+                triggerMissionControl()
+                
+                lastClickTime = Date.distantPast
+                lastClickPoint = .zero
+            } else {
+                logToFile("⏱️ [macOS 13 单击第一下] 判定为可能是单击的第一下。")
+                lastClickTime = now
+                lastClickPoint = clickPoint
+                
+                pendingClickWorkItem?.cancel()
+                
+                if isSingleClickEnabled {
+                    if isDoubleClickEnabled {
+                        let workItem = DispatchWorkItem { [weak self] in
+                            self?.triggerShowDesktop()
+                        }
+                        pendingClickWorkItem = workItem
+                        DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                    } else {
+                        triggerShowDesktop()
+                    }
+                }
+            }
+        }
+    }
+    
+
+    
     func convertToCGCoordinate(_ point: NSPoint) -> CGPoint {
         guard let mainScreen = NSScreen.screens.first else { return point }
         let screenHeight = mainScreen.frame.height
         return CGPoint(x: point.x, y: screenHeight - point.y)
+    }
+    
+    // 检查元素是否位于 Finder 实体标准文件夹窗口 (AXStandardWindow) 内部
+    func isInsideStandardWindow(element: AXUIElement) -> Bool {
+        var current = element
+        while true {
+            var roleValue: AnyObject?
+            let roleResult = AXUIElementCopyAttributeValue(current, kAXRoleAttribute as CFString, &roleValue)
+            if roleResult == .success, let role = roleValue as? String {
+                if role == "AXWindow" {
+                    var subroleValue: AnyObject?
+                    let subroleResult = AXUIElementCopyAttributeValue(current, kAXSubroleAttribute as CFString, &subroleValue)
+                    if subroleResult == .success, let subrole = subroleValue as? String {
+                        if subrole == "AXStandardWindow" {
+                            if #available(macOS 14.0, *) {
+                                // macOS 14.0+ 保持原汁原味、之前已经验证完美的逻辑，不要动它！
+                                return true
+                            } else {
+                                // 为了区分真正的 Finder 文件夹窗口与 macOS 13 及以下系统的桌面背景窗口（其在 AX 树中也可能有 AXWindow 祖先），
+                                // 我们双重检验其是否具有关闭按钮属性，或者其窗口标题是否不为“Desktop”/“桌面”/空。
+                                var closeButtonValue: AnyObject?
+                                let hasCloseButton = AXUIElementCopyAttributeValue(current, kAXCloseButtonAttribute as CFString, &closeButtonValue) == .success && closeButtonValue != nil
+                                
+                                var titleValue: AnyObject?
+                                AXUIElementCopyAttributeValue(current, kAXTitleAttribute as CFString, &titleValue)
+                                let title = (titleValue as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                let isDesktopTitle = (title == "Desktop" || title == "桌面" || title.isEmpty)
+                                
+                                // 只有具备关闭按钮（说明是实体交互窗口）或者其非桌面标题时，才确认为真正的 Finder 实体文件夹窗口
+                                if hasCloseButton || !isDesktopTitle {
+                                    return true
+                                }
+                            }
+                        }
+                    }
+                    return false
+                }
+            }
+            
+            var parentValue: AnyObject?
+            let parentResult = AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parentValue)
+            if parentResult == .success, let parent = parentValue {
+                current = parent as! AXUIElement
+            } else {
+                break
+            }
+        }
+        return false
     }
     
     func isClickOnDesktop(at point: CGPoint) -> Bool {
@@ -506,32 +621,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         let isDesktopTitle = (title == "Desktop" || title == "桌面" || title.isEmpty)
                         
                         if isDesktopRole && isDesktopTitle {
-                            // 为了排除真实 Finder 文件夹窗口中的空白区域或组组件（它们的 Layer 为 0，但角色也是 AXGroup 或 AXWindow），
-                            // 我们双重检验屏幕上是否有处于 Layer 0 且覆盖此点击坐标的 Finder 实体可交互窗口。
-                            let hasFinderLayer0Window = windowList.contains { window in
-                                guard let wLayer = window[kCGWindowLayer as String] as? Int,
-                                      let wPid = window[kCGWindowOwnerPID as String] as? Int32,
-                                      let wBoundsDict = window[kCGWindowBounds as String] as? [String: Any],
-                                      let wRect = CGRect(dictionaryRepresentation: wBoundsDict as CFDictionary) else {
-                                    return false
-                                }
-                                
-                                if wLayer == 0 && wRect.contains(point) {
-                                    if let app = NSRunningApplication(processIdentifier: wPid), app.bundleIdentifier == "com.apple.finder" {
-                                        // 排除桌面壁纸窗口自身在 Layer 0 的情况（通过窗口标题排除桌面背景本身）
-                                        let wName = window[kCGWindowName as String] as? String ?? ""
-                                        let isRealFolder = !(wName == "" || wName == "Desktop" || wName == "桌面")
-                                        return isRealFolder
-                                    }
-                                }
-                                return false
-                            }
+                            // 为了排除真实 Finder 文件夹窗口中的空白区域或组组件，
+                            // 我们使用 AX API 顺着父链检测该元素是否位于真实的 Finder 标准文件夹窗口 (AXStandardWindow) 内部。
+                            let isInsideFolder = isInsideStandardWindow(element: clickedElement)
                             
-                            if !hasFinderLayer0Window {
+                            if !isInsideFolder {
                                 logToFile("🎯 [AX判定] 确认点击落在空白壁纸最底层区域！")
                                 return true
                             } else {
-                                logToFile("🛡️ [AX拦截] 点击落在 Finder Layer 0 实体窗口的空白区域内")
+                                logToFile("🛡️ [AX拦截] 点击落在 Finder 实体文件夹窗口的空白区域内")
                                 return false
                             }
                         } else {
@@ -692,15 +790,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             self.logToFile("唤醒 Mission Control 展示桌面 (Show Desktop)")
             
-            let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
-            let config = NSWorkspace.OpenConfiguration()
-            config.arguments = ["1"]
-            
-            NSWorkspace.shared.open(url, configuration: config) { [weak self] _, error in
-                if let error = error {
-                    self?.logToFile("❌ NSWorkspace launch ShowDesktop failed: \(error.localizedDescription)")
-                } else {
-                    self?.logToFile("✓ NSWorkspace launch ShowDesktop success.")
+            if #available(macOS 14.0, *) {
+                let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+                let config = NSWorkspace.OpenConfiguration()
+                config.arguments = ["1"]
+                
+                NSWorkspace.shared.open(url, configuration: config) { [weak self] _, error in
+                    if let error = error {
+                        self?.logToFile("❌ NSWorkspace launch ShowDesktop failed: \(error.localizedDescription)")
+                    } else {
+                        self?.logToFile("✓ NSWorkspace launch ShowDesktop success.")
+                    }
+                }
+            } else {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
+                process.arguments = ["1"]
+                do {
+                    try process.run()
+                    self.logToFile("✓ Process launch ShowDesktop success.")
+                } catch {
+                    self.logToFile("❌ Process launch ShowDesktop failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -718,14 +828,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             self.logToFile("唤醒 Mission Control 展开所有窗口列表")
             
-            let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
-            let config = NSWorkspace.OpenConfiguration()
-            
-            NSWorkspace.shared.open(url, configuration: config) { [weak self] _, error in
-                if let error = error {
-                    self?.logToFile("❌ NSWorkspace launch MissionControl failed: \(error.localizedDescription)")
-                } else {
-                    self?.logToFile("✓ NSWorkspace launch MissionControl success.")
+            if #available(macOS 14.0, *) {
+                let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+                let config = NSWorkspace.OpenConfiguration()
+                
+                NSWorkspace.shared.open(url, configuration: config) { [weak self] _, error in
+                    if let error = error {
+                        self?.logToFile("❌ NSWorkspace launch MissionControl failed: \(error.localizedDescription)")
+                    } else {
+                        self?.logToFile("✓ NSWorkspace launch MissionControl success.")
+                    }
+                }
+            } else {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
+                do {
+                    try process.run()
+                    self.logToFile("✓ Process launch MissionControl success.")
+                } catch {
+                    self.logToFile("❌ Process launch MissionControl failed: \(error.localizedDescription)")
                 }
             }
         }
