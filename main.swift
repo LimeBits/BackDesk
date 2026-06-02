@@ -424,16 +424,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     pendingClickWorkItem?.cancel()
                     
                     if isSingleClickEnabled {
-                        if isDoubleClickEnabled {
-                            // 2a. 若双击功能开启，必须延迟等待系统标准的双击间隔后再执行“单击”逻辑，防止双击事件在判定前流失
-                            let workItem = DispatchWorkItem { [weak self] in
-                                self?.triggerShowDesktop()
+                        let isMCActive = self.isMissionControlActive()
+                        self.logToFile("🕵️ [平铺检测] 当前平铺状态 active = \(isMCActive)")
+                        
+                        if isMCActive {
+                            // 若当前处于平铺状态，单击空白处即可恢复窗口（通过调起 Mission Control 切换）
+                            if isDoubleClickEnabled {
+                                let workItem = DispatchWorkItem { [weak self] in
+                                    self?.triggerMissionControl()
+                                }
+                                pendingClickWorkItem = workItem
+                                DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                            } else {
+                                triggerMissionControl()
                             }
-                            pendingClickWorkItem = workItem
-                            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
                         } else {
-                            // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
-                            triggerShowDesktop()
+                            if isDoubleClickEnabled {
+                                // 2a. 若双击功能开启，必须延迟等待系统标准的双击间隔后再执行“单击”逻辑，防止双击事件在判定前流失
+                                let workItem = DispatchWorkItem { [weak self] in
+                                    self?.triggerShowDesktop()
+                                }
+                                pendingClickWorkItem = workItem
+                                DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                            } else {
+                                // 2b. 若双击功能关闭，完全无冲突，直接以 0 毫秒绝对零延迟即刻展示桌面！
+                                triggerShowDesktop()
+                            }
                         }
                         // 返回 nil，吞噬该事件，避免系统原生功能的冲突
                         return nil
@@ -489,14 +505,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingClickWorkItem?.cancel()
                 
                 if isSingleClickEnabled {
-                    if isDoubleClickEnabled {
-                        let workItem = DispatchWorkItem { [weak self] in
-                            self?.triggerShowDesktop()
+                    let isMCActive = self.isMissionControlActive()
+                    self.logToFile("🕵️ [macOS 13 平铺检测] 当前平铺状态 active = \(isMCActive)")
+                    
+                    if isMCActive {
+                        if isDoubleClickEnabled {
+                            let workItem = DispatchWorkItem { [weak self] in
+                                self?.triggerMissionControl()
+                            }
+                            pendingClickWorkItem = workItem
+                            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                        } else {
+                            triggerMissionControl()
                         }
-                        pendingClickWorkItem = workItem
-                        DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
                     } else {
-                        triggerShowDesktop()
+                        if isDoubleClickEnabled {
+                            let workItem = DispatchWorkItem { [weak self] in
+                                self?.triggerShowDesktop()
+                            }
+                            pendingClickWorkItem = workItem
+                            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickInterval, execute: workItem)
+                        } else {
+                            triggerShowDesktop()
+                        }
                     }
                 }
             }
@@ -731,6 +762,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // 其它情况（非常规应用 + 无标题 + 全屏尺寸）：大概率是手势软件全局抓取层、壁纸渲染层等“全屏隐形透明窗口”，不视为真实可交互窗口
+        return false
+    }
+    
+    // 检测当前是否处于平铺（Mission Control）状态
+    func isMissionControlActive() -> Bool {
+        guard let dockApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else {
+            return false
+        }
+        let dockPid = dockApp.processIdentifier
+        
+        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        
+        for window in windowList {
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int32, pid == dockPid else {
+                continue
+            }
+            if let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+               let y = boundsDict["Y"] as? Double {
+                // 当 Mission Control 处于平铺状态时，Dock 会维护一个 Y 轴起始位置为 -1 的特殊窗口
+                if y == -1 {
+                    return true
+                }
+            }
+        }
         return false
     }
     
