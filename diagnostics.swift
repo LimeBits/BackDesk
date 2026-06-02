@@ -18,6 +18,7 @@ class DiagnosticsDelegate: NSObject, NSApplicationDelegate {
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             self?.analyzeClick(event)
         }
+        fflush(nil)
     }
     
     func analyzeClick(_ event: NSEvent) {
@@ -29,6 +30,47 @@ class DiagnosticsDelegate: NSObject, NSApplicationDelegate {
         let clickPoint = CGPoint(x: mouseLocation.x, y: screenHeight - mouseLocation.y)
         
         print("\n📍 检测到鼠标点击！坐标为: \(clickPoint)")
+        print("--------------------------------------------------------------------------------")
+        print("【1】Accessibility API 深度探测 (AX Element)")
+        print("--------------------------------------------------------------------------------")
+        
+        let systemWide = AXUIElementCreateSystemWide()
+        var element: AXUIElement?
+        let axResult = AXUIElementCopyElementAtPosition(systemWide, Float(clickPoint.x), Float(clickPoint.y), &element)
+        
+        if axResult == .success, let clickedElement = element {
+            var elementPid: pid_t = 0
+            if AXUIElementGetPid(clickedElement, &elementPid) == .success {
+                let appName: String
+                let bundleId: String
+                if let app = NSRunningApplication(processIdentifier: elementPid) {
+                    appName = app.localizedName ?? "Unknown"
+                    bundleId = app.bundleIdentifier ?? "Unknown"
+                } else {
+                    appName = "Process \(elementPid)"
+                    bundleId = "Unknown"
+                }
+                
+                var roleValue: AnyObject?
+                AXUIElementCopyAttributeValue(clickedElement, kAXRoleAttribute as CFString, &roleValue)
+                let role = roleValue as? String ?? "None"
+                
+                var titleValue: AnyObject?
+                AXUIElementCopyAttributeValue(clickedElement, kAXTitleAttribute as CFString, &titleValue)
+                let title = titleValue as? String ?? "None"
+                
+                print("Owner App : \(appName) (\(bundleId))")
+                print("AX Role   : \(role)")
+                print("AX Title  : '\(title)'")
+            } else {
+                print("❌ 无法获取 AX 元素的 PID")
+            }
+        } else {
+            print("❌ Accessibility API 探测失败，错误码: \(axResult.rawValue)")
+        }
+        
+        print("\n--------------------------------------------------------------------------------")
+        print("【2】CGWindowList 几何碰撞检测 (Layer >= 0 且包含点击点)")
         print("--------------------------------------------------------------------------------")
         print(String(format: "%-25@ | %-30@ | %-6@ | %@", "应用名称 (Owner)", "窗口标题 (WindowName)", "Layer", "窗口范围 (Bounds)"))
         print("--------------------------------------------------------------------------------")
@@ -60,6 +102,7 @@ class DiagnosticsDelegate: NSObject, NSApplicationDelegate {
         print("--------------------------------------------------------------------------------")
         print("诊断完成！共有 \(matchCount) 个窗口包含此点击坐标点。")
         print("请在终端中复制以上输出，发送给我分析！按 Control + C 可以退出诊断程序。")
+        fflush(nil)
     }
 }
 

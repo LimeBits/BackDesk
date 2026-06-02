@@ -14,3 +14,4 @@ dmg_temp*/
 # Temporary files
 *.icns
 *.iconset/
+*.log

@@ -249,7 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 ToDesktop"
-        alert.informativeText = "ToDesktop v0.2.2\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "ToDesktop v0.2.3\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -447,7 +447,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func isClickOnDesktop(at point: CGPoint) -> Bool {
         logToFile("🔍 [壁纸分析] 开始进行多维度坐标重叠检测...")
         
-        // 1. 核心修复：高精度拦截系统顶部菜单栏/状态栏区域的点击（仅限屏幕最顶部那一条窄边）。
+        // 1. 核心检测：高精度拦截系统顶部菜单栏/状态栏区域的点击（仅限屏幕最顶部那一条窄边）。
         guard let primaryScreen = NSScreen.screens.first else { return false }
         let primaryHeight = primaryScreen.frame.height
         let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
@@ -465,17 +465,99 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // 2. 获取所有在屏幕上显示的窗口（按前后遮挡顺序排布）
+        // 2. 获取所有在屏幕上显示的窗口，用于 Dock 点击几何辅助判定及兜底检测
         guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
             logToFile("❌ 无法获取系统可见窗口信息列表！")
             return false
         }
         
-        // 核心修复：精准判定点击是否落在 Dock 的实际物理像素渲染区域
+        // 3. 核心检测：精准判定点击是否落在 Dock 的实际物理像素渲染区域
         if isClickInPhysicalDock(point: point, windowList: windowList) {
             logToFile("⚠️ [拦截] 点击落在了系统 Dock 物理绘制区域内。")
             return false
         }
+        
+        // 4. 【核心黄金法则】第一优先：Accessibility API 深度穿透探测。
+        // 这能极其完美地穿透所有不接收普通点击的第三方纯透明/监听全屏窗口（如微信 Layer 27、Chrome 的无标题 GPU 隐形层等），直接捕捉真实底层 UI 控件！
+        let systemWide = AXUIElementCreateSystemWide()
+        var element: AXUIElement?
+        let axResult = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
+        
+        if axResult == .success, let clickedElement = element {
+            var elementPid: pid_t = 0
+            if AXUIElementGetPid(clickedElement, &elementPid) == .success {
+                if let app = NSRunningApplication(processIdentifier: elementPid) {
+                    let bundleId = app.bundleIdentifier ?? ""
+                    let appName = app.localizedName ?? bundleId
+                    
+                    // A. 如果点击的元素属于 Finder 进程
+                    if bundleId == "com.apple.finder" {
+                        var roleValue: AnyObject?
+                        AXUIElementCopyAttributeValue(clickedElement, kAXRoleAttribute as CFString, &roleValue)
+                        let role = roleValue as? String ?? ""
+                        
+                        var titleValue: AnyObject?
+                        AXUIElementCopyAttributeValue(clickedElement, kAXTitleAttribute as CFString, &titleValue)
+                        let title = (titleValue as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        
+                        logToFile("🔍 [AX分析] 点击了 Finder 元素 - Role: \(role), Title: '\(title)'")
+                        
+                        let isDesktopRole = (role == "AXScrollArea" || role == "AXWindow" || role == "AXGroup")
+                        let isDesktopTitle = (title == "Desktop" || title == "桌面" || title.isEmpty)
+                        
+                        if isDesktopRole && isDesktopTitle {
+                            // 为了排除真实 Finder 文件夹窗口中的空白区域或组组件（它们的 Layer 为 0，但角色也是 AXGroup 或 AXWindow），
+                            // 我们双重检验屏幕上是否有处于 Layer 0 且覆盖此点击坐标的 Finder 实体可交互窗口。
+                            let hasFinderLayer0Window = windowList.contains { window in
+                                guard let wLayer = window[kCGWindowLayer as String] as? Int,
+                                      let wPid = window[kCGWindowOwnerPID as String] as? Int32,
+                                      let wBoundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                                      let wRect = CGRect(dictionaryRepresentation: wBoundsDict as CFDictionary) else {
+                                    return false
+                                }
+                                
+                                if wLayer == 0 && wRect.contains(point) {
+                                    if let app = NSRunningApplication(processIdentifier: wPid), app.bundleIdentifier == "com.apple.finder" {
+                                        // 排除桌面壁纸窗口自身在 Layer 0 的情况（通过窗口标题排除桌面背景本身）
+                                        let wName = window[kCGWindowName as String] as? String ?? ""
+                                        let isRealFolder = !(wName == "" || wName == "Desktop" || wName == "桌面")
+                                        return isRealFolder
+                                    }
+                                }
+                                return false
+                            }
+                            
+                            if !hasFinderLayer0Window {
+                                logToFile("🎯 [AX判定] 确认点击落在空白壁纸最底层区域！")
+                                return true
+                            } else {
+                                logToFile("🛡️ [AX拦截] 点击落在 Finder Layer 0 实体窗口的空白区域内")
+                                return false
+                            }
+                        } else {
+                            // 只要角色不是桌面背景本身，且属于 Finder（如桌面文件图标、Finder窗口的控制组件等），一律视为点击了文件图标或活动 Finder 窗口
+                            logToFile("🛡️ [AX拦截] 点击落在 Finder 非桌面背景元素上 (Role: \(role), Title: '\(title)')")
+                            return false
+                        }
+                    }
+                    
+                    // B. 双重保障：若是点击了 Dock 栏或其他系统 UI 特权元素
+                    if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
+                        logToFile("🛡️ [AX拦截] 点击落在系统特权进程元素上 (\(bundleId))")
+                        return false
+                    }
+                    
+                    // C. 其它第三方 App 的真实 UI 元素拦截
+                    // 如果点击到了其他任何第三方应用程序（如 Chrome, WeChat 聊天窗口，文本编辑等）的 UI 元素，说明物理上确实被真实可见窗口遮挡了
+                    logToFile("🛡️ [AX拦截] 点击落在活跃 App [\(appName)] 的真实 UI 元素上")
+                    return false
+                }
+            }
+        }
+        
+        // 5. 第二优先：Geometry Fallback 几何兜底检测。
+        // 当 Accessibility API 遇到无 AX 特性窗口、卡顿或未授权等异常返回失败时，我们以高性能的窗口重叠几何碰撞进行稳健兜底。
+        logToFile("⚠️ [AX兜底] Accessibility 未能识别此坐标下的元素，启用几何重叠兜底检测...")
         
         for window in windowList {
             guard let layer = window[kCGWindowLayer as String] as? Int,
@@ -493,7 +575,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             
-            // 核心突破：我们检查所有在屏幕上层绘制的真实图层窗口（Layer >= 0）
+            // 核心过滤：如果窗口位于 Layer > 0 且是全屏窗口（如微信 Layer 27 全屏透明截图/监听层），绝对是纯隐形窗口，一律不予拦截
+            if layer > 0 && isFullscreen(rect: rect) {
+                continue
+            }
+            
+            // 我们检查所有在屏幕上层绘制的真实图层窗口（Layer >= 0）
             if layer >= 0 {
                 // 使用 Bundle ID 检查，彻底消除本地化名称差异对 Finder 的误判
                 var isFinder = false
@@ -501,67 +588,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     isFinder = app.bundleIdentifier == "com.apple.finder"
                 }
                 
-                // 排除 Finder 自身的桌面壁纸窗口和桌面图标所在的容器窗口 (兼容多语言系统，加入“桌面”的识别)
+                // 排除 Finder 自身的桌面壁纸窗口和桌面图标所在的容器窗口 (兼容多语言系统)
                 if isFinder && (windowName == "" || windowName == "Desktop" || windowName == "桌面") {
                     continue
                 }
                 
-                // 核心突破：多维度判定当前窗口是否为真实、用户可交互的窗口。
+                // 多维度判定当前窗口是否为真实、用户可交互的窗口。
                 if isRealInteractiveWindow(pid: pid, windowName: windowName, rect: rect) {
                     if rect.contains(point) {
-                        logToFile("🛡️ [常规窗口遮挡] 点击落在活跃窗口范围内! 拦截者: [\(ownerName)] (PID: \(pid), Layer: \(layer), Title: '\(windowName)', Bounds: \(rect))")
+                        logToFile("🛡️ [几何拦截] 点击落在活跃窗口范围内! 拦截者: [\(ownerName)] (PID: \(pid), Layer: \(layer), Title: '\(windowName)', Bounds: \(rect))")
                         return false
                     }
                 }
             }
         }
         
-        // 3. 核心修复：利用 Accessibility API 深度探测鼠标是否落在了 Finder 桌面上的文件/文件夹/磁盘挂载等图标上。
-        let systemWide = AXUIElementCreateSystemWide()
-        var element: AXUIElement?
-        let axResult = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
-        
-        if axResult == .success, let clickedElement = element {
-            var elementPid: pid_t = 0
-            if AXUIElementGetPid(clickedElement, &elementPid) == .success {
-                if let app = NSRunningApplication(processIdentifier: elementPid) {
-                    let bundleId = app.bundleIdentifier ?? ""
-                    
-                    // 如果点击的元素属于 Finder 进程
-                    if bundleId == "com.apple.finder" {
-                        var roleValue: AnyObject?
-                        AXUIElementCopyAttributeValue(clickedElement, kAXRoleAttribute as CFString, &roleValue)
-                        let role = roleValue as? String ?? ""
-                        
-                        var titleValue: AnyObject?
-                        AXUIElementCopyAttributeValue(clickedElement, kAXTitleAttribute as CFString, &titleValue)
-                        let title = (titleValue as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                        
-                        print("点击了 Finder 元素 - Role: \(role), Title: \(title)")
-                        
-                        if role == "AXScrollArea" || role == "AXWindow" {
-                            // 极速判定：点击在壁纸的最底层，放行触发桌面摊开
-                        } else {
-                            // 只要角色不是桌面最底层壁纸背景，且标题不为空、不为 "Desktop"/"桌面"/"Finder"，
-                            // 或者角色本身是文字（标签）、图片（图标）、按钮或通用图标，就一律判定为点击了桌面文件图标
-                            let isDesktopTitle = (title == "Desktop" || title == "桌面" || title == "Finder" || title.isEmpty)
-                            if !isDesktopTitle || role == "AXStaticText" || role == "AXImage" || role == "AXIcon" || role == "AXButton" {
-                                print("判定为点击了桌面文件或文件夹图标，已拦截")
-                                return false
-                            }
-                        }
-                    }
-                    
-                    // 双重保障：若是点击了 Dock 栏或其他系统元素
-                    if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
-                        print("点击落在系统特权进程元素上 (\(bundleId))，已拦截")
-                        return false
-                    }
-                }
-            }
-        }
-        
-        // 没有落在任何普通活动窗口、系统栏或桌面文件图标上，意味着用户点击了桌面空白壁纸区域！
+        logToFile("🎯 [几何判定] 未检测到任何实体常规窗口遮挡，判定为点击落在空白壁纸区域！")
         return true
     }
     
