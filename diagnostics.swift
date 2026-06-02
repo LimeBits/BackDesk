@@ -6,8 +6,8 @@ class DiagnosticsDelegate: NSObject, NSApplicationDelegate {
     var globalMonitor: Any?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("=== ToDesktop 诊断程序启动 ===")
-        print("请注意：首次启动可能需要获取系统辅助功能权限，如果在 System Preferences 中已经勾选过 ToDesktop，只需在终端中同意即可。")
+        print("=== BackDesk 诊断程序启动 ===")
+        print("请注意：首次启动可能需要获取系统辅助功能权限，如果在 System Preferences 中已经勾选过 BackDesk，只需在终端中同意即可。")
         print("【诊断操作】: 请点击一次您的【桌面空白壁纸】，我将在此打印出您鼠标指针下所有窗口的详细层级信息。")
         
         let hasAccess = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)

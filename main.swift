@@ -21,7 +21,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var lastClickPoint: CGPoint = .zero
     
     func logToFile(_ message: String) {
-        let logPath = "/Users/bruce/Desktop/b-vibe/todesktop/app_test.log"
+        let logPath = "/Users/bruce/Desktop/b-vibe/todesktop/backdesk_test.log"
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         let timestamp = formatter.string(from: Date())
@@ -43,10 +43,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         AppDelegate.shared = self
         
         // 清理以前的旧日志文件，开启本次运行的干净日志
-        try? FileManager.default.removeItem(atPath: "/Users/bruce/Desktop/b-vibe/todesktop/app_test.log")
+        try? FileManager.default.removeItem(atPath: "/Users/bruce/Desktop/b-vibe/todesktop/backdesk_test.log")
         
         logToFile("==================================================================")
-        logToFile("🚀 ToDesktop 应用启动成功！正在载入极客监测日志系统...")
+        logToFile("🚀 BackDesk 应用启动成功！正在载入极客监测日志系统...")
         logToFile("==================================================================")
         
         // 从 UserDefaults 加载用户偏好设置，若不存在则默认为 true
@@ -77,7 +77,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             startPermissionPolling()
         }
         
-        print("ToDesktop App Started successfully.")
+        print("BackDesk App Started successfully.")
     }
 
     func startPermissionPolling() {
@@ -106,7 +106,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         if let button = statusItem.button {
             // 使用 SF Symbols 的 🖥️ (desktopcomputer) 作为图标，如果不可用则回退到文本
-            if let image = NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: "ToDesktop") {
+            if let image = NSImage(systemSymbolName: "desktopcomputer", accessibilityDescription: "BackDesk") {
                 image.isTemplate = true
                 button.image = image
             } else {
@@ -130,7 +130,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func handleSettingsConflict() {
         let alert = NSAlert()
         alert.messageText = "系统原生点击壁纸冲突引导"
-        alert.informativeText = "macOS 14+ 系统的「点击壁纸显示桌面」功能会与 ToDesktop 的「双击壁纸平铺」产生时序冲突，且容易引发日常误触。\n\n推荐将系统选项更改为「仅在台前调度时」或关闭。我们将为您打开「系统设置」，请在其页面中进行配置。"
+        alert.informativeText = "macOS 14+ 系统的「点击壁纸显示桌面」功能会与 BackDesk 的「双击壁纸平铺」产生时序冲突，且容易引发日常误触。\n\n推荐将系统选项更改为「仅在台前调度时」或关闭。我们将为您打开「系统设置」，请在其页面中进行配置。"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "去设置")
         alert.addButton(withTitle: "好的")
@@ -196,7 +196,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         
         // 关于与退出
-        menu.addItem(NSMenuItem(title: "关于 ToDesktop", action: #selector(showAbout), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "关于 BackDesk", action: #selector(showAbout), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q"))
         
         statusItem.menu = menu
@@ -249,8 +249,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func showAbout() {
         let alert = NSAlert()
-        alert.messageText = "关于 ToDesktop"
-        alert.informativeText = "ToDesktop v0.2.3\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.messageText = "关于 BackDesk"
+        alert.informativeText = "BackDesk v0.2.3\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -269,7 +269,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func promptForAccessibility() {
         let alert = NSAlert()
         alert.messageText = "需要系统辅助功能权限"
-        alert.informativeText = "ToDesktop 需要“辅助功能”权限来监听您的鼠标点击，以识别何时点击了桌面空白壁纸。\n\n请在随后的系统弹窗中，打开「系统设置」并允许 ToDesktop 运行。开启后请重新点击状态栏菜单更新状态。"
+        alert.informativeText = "BackDesk 需要“辅助功能”权限来监听您的鼠标点击，以识别何时点击了桌面空白壁纸。\n\n请在随后的系统弹窗中，打开「系统设置」并允许 BackDesk 运行。开启后请重新点击状态栏菜单更新状态。"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "去设置")
         alert.addButton(withTitle: "稍后")
@@ -284,7 +284,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             let alert = NSAlert()
             alert.messageText = "⚠️ 系统辅助功能授权已失效"
-            alert.informativeText = "由于 ToDesktop 进行了重新编译与安装，macOS 安全系统已经置空了之前的隐私授权缓存。\n\n请打开「系统设置 -> 隐私与安全性 -> 辅助功能」，在列表中将 [ToDesktop] 的开关先【关闭】然后再【重新开启】一次，即可彻底恢复正常工作！"
+            alert.informativeText = "由于 BackDesk 进行了重新编译与安装，macOS 安全系统已经置空了之前的隐私授权缓存。\n\n请打开「系统设置 -> 隐私与安全性 -> 辅助功能」，在列表中将 [BackDesk] 的开关先【关闭】然后再【重新开启】一次，即可彻底恢复正常工作！"
             alert.alertStyle = .warning
             alert.addButton(withTitle: "去系统设置")
             alert.addButton(withTitle: "好的")
@@ -855,7 +855,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 开机自启控制 (AppleScript 实现)
     func setLaunchAtLogin(enabled: Bool) {
         let bundlePath = Bundle.main.bundlePath
-        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "ToDesktop"
+        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "BackDesk"
         
         var script = ""
         if enabled {
@@ -888,7 +888,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func isLaunchAtLoginEnabled() -> Bool {
-        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "ToDesktop"
+        let bundleName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "BackDesk"
         let script = """
         tell application "System Events"
             return exists login item "\(bundleName)"

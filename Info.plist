@@ -5,13 +5,13 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>ToDesktop</string>
+    <string>BackDesk</string>
     <key>CFBundleIdentifier</key>
-    <string>com.bruce.todesktop</string>
+    <string>com.bruce.backdesk</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>ToDesktop</string>
+    <string>BackDesk</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

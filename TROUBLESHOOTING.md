@@ -41,9 +41,9 @@ graph TD
 ## 📂 核心技术陷阱（坑）与解决思路
 
 ### 🕳️ 坑一：macOS 14+ 录屏隐私封锁导致 Finder 窗口空白分栏穿透
-*   **现象描述**：在 macOS 14 Sonoma 上，当 Finder 处于 **分栏视图 (Column View)** 时，点击最右侧大片空白列区域，所有窗口会瞬间消失，误触发了 ToDesktop 的“显示桌面”功能（产生误穿透）。
+*   **现象描述**：在 macOS 14 Sonoma 上，当 Finder 处于 **分栏视图 (Column View)** 时，点击最右侧大片空白列区域，所有窗口会瞬间消失，误触发了 BackDesk 的“显示桌面”功能（产生误穿透）。
 *   **深层根源**：
-    ToDesktop 原有逻辑通过 `CGWindowListCopyWindowInfo` 遍历屏幕可见窗口，并用 `isRealFolder = !(wName == "" || wName == "Desktop")` 排除 Finder 实体窗口。
+    BackDesk 原有逻辑通过 `CGWindowListCopyWindowInfo` 遍历屏幕可见窗口，并用 `isRealFolder = !(wName == "" || wName == "Desktop")` 排除 Finder 实体窗口。
     **但从 macOS 10.15 延续至 macOS 14 越发严苛的苹果安全限制**：任何没有被用户授予**“屏幕录制 (Screen Recording)”**权限的 App，调用 `CGWindowList` 时其 `kCGWindowName` 键值都会被系统强制**抹除/置空 (返回 `""`)**。这就导致真实 Finder 文件夹窗口的 `wName` 恒为 `""`，从而永远无法被 `isRealFolder` 命中，造成点击 Finder 空白分栏处时被误判定为落在桌面上，发生穿透吞噬。
 *   **解决思路**：
     彻底废弃对 `kCGWindowName` 的依赖，改用无需“录屏权限”即可获取高保真节点信息的 **Accessibility API (辅助功能 API)**：通过 `AXUIElementCopyElementAtPosition` 获取鼠标指针正下方的元素。如果是 Finder 进程，我们实现了一个 `isInsideStandardWindow(element:)` 的辅助方法，沿着 AX 父节点链 (`kAXParentAttribute`) 链式往上爬升。如果爬到最近的 `AXWindow` 节点且其子角色为 `AXStandardWindow`，就证明该空白列属于 Finder 实体文件夹窗口的一部分，直接拦截！
@@ -53,7 +53,7 @@ graph TD
 ---
 
 ### 🕳️ 坑二：macOS 13 及以下系统上，桌面壁纸被反向误判为 Finder 文件夹窗口（全盘失效）
-*   **现象描述**：将 macOS 14+ 上验证完美运行的 `isInsideStandardWindow` 逻辑编译并发布到 macOS 13（Ventura）或更低系统后，用户点击桌面壁纸的任何空白处，ToDesktop **完全没有反应**，单击/双击全部失效。
+*   **现象描述**：将 macOS 14+ 上验证完美运行的 `isInsideStandardWindow` 逻辑编译并发布到 macOS 13（Ventura）或更低系统后，用户点击桌面壁纸的任何空白处，BackDesk **完全没有反应**，单击/双击全部失效。
 *   **深层根源**：
     在 macOS 13 及更低系统上，Finder 自身的桌面大背景（壁纸与桌面图标的容器）在 Accessibility 的窗口结构树中，**也被系统定义为了一个独立的 `AXWindow` 且其 subrole 同样为 `AXStandardWindow`**。
     所以，当我们在老系统上点击桌面空白壁纸时，AX 父级探测一路顺着 `AXScrollArea` 往上爬，最终命中了桌面大背景的 `AXStandardWindow`，误判定 `isInsideFolder == true`（误认为点击落在 Finder 文件夹窗口内），从而将本该响应的壁纸点击全部拦截，导致 App 全盘失效。
@@ -72,7 +72,7 @@ graph TD
 *   **现象描述**：将老系统上的“关闭按钮排他检测”合并后，本已验证完美的 **macOS 14+ (Sonoma)** 系统上又失效了（分栏空白处又开始穿透）。
 *   **深层根源**：
     这就是跨版本多变性最棘手的“翘翘板”现象。
-    **macOS 14 Sonoma 引入了极为强悍的跨进程 Accessibility 硬沙盒安全机制**：ToDesktop 虽然拥有辅助功能权限，但当通过 AX API 拷贝**其他进程**（Finder）的特定控制属性（如 `kAXCloseButtonAttribute`）或窗口 title 时，Sonoma 底层会以隐私安全为由**强制返回失败或置空**。
+    **macOS 14 Sonoma 引入了极为强悍的跨进程 Accessibility 硬沙盒安全机制**：BackDesk 虽然拥有辅助功能权限，但当通过 AX API 拷贝**其他进程**（Finder）的特定控制属性（如 `kAXCloseButtonAttribute`）或窗口 title 时，Sonoma 底层会以隐私安全为由**强制返回失败或置空**。
     这就导致在 macOS 14 上，真实 Finder 窗口的 `hasCloseButton` 恒为 `false`，且 `isDesktopTitle` 恒为 `true`。这使得真实 Finder 窗口在 Sonoma 上又被误认为了桌面背景，让 14.0+ 再次瘫痪。
 *   **解决思路**：
     **系统问题，系统隔离**。既然 macOS 14 的桌面背景不是 `AXStandardWindow`，那么 Sonoma 就不需要任何排他性校验；而 macOS 13 存在干扰但 AX 权限开放，需要关闭按钮校验。
@@ -91,7 +91,7 @@ graph TD
 ---
 
 ### 🕳️ 坑四：唤醒机制跨版本机制冲突：Process vs NSWorkspace
-ToDesktop 支持通过点击壁纸唤醒“显示桌面”（Mission Control 参数 `"1"`）和“平铺窗口”功能。在代码演进中，我们经历了从 `Process` 转向 `NSWorkspace`，再到发现两端严重冲突的历程：
+BackDesk 支持通过点击壁纸唤醒“显示桌面”（Mission Control 参数 `"1"`）和“平铺窗口”功能。在代码演进中，我们经历了从 `Process` 转向 `NSWorkspace`，再到发现两端严重冲突的历程：
 1.  **macOS 13 及以下系统**：
     *   **冲突现象**：使用 `NSWorkspace.shared.open` 唤醒 Mission Control 时，如果 Mission Control 在系统后台已经启动（默认常开），**后续传入的 arguments（如 `"1"` 展示桌面）会被系统 Launchd 默默忽略**，导致界面毫无反应。
     *   **解决思路**：必须使用 v0.1.0 经典的 `Process()` 子进程，直接寻址并强行运行二进制 `/System/Applications/Mission Control.app/Contents/MacOS/Mission Control` 并附带参数。
@@ -142,7 +142,7 @@ ToDesktop 支持通过点击壁纸唤醒“显示桌面”（Mission Control 参
 
 ## 🏰 终极进化：双路运行时隔离架构 (Dual-Path Architecture)
 
-经历了这五个巨坑的洗礼后，ToDesktop 放弃了试图用一套“银弹”代码包揽一切的幻想，而是针对每个版本的系统特性，量身定制了**“双路运行时隔离架构 (Dual-Path Architecture)”**：
+经历了这五个巨坑的洗礼后，BackDesk 放弃了试图用一套“银弹”代码包揽一切的幻想，而是针对每个版本的系统特性，量身定制了**“双路运行时隔离架构 (Dual-Path Architecture)”**：
 
 ### 🛠️ 1. macOS 14.0+ (Sonoma) 专属通道
 *   **监听机制**：启用 `CGEventTap` 监听机制。由于 Sonoma 原生自带“点击壁纸显示桌面”功能，我们必须在 `CGEventTap` 中返回 `nil`，从而在**物理级层面吞噬**鼠标左键事件。这起到了完美的主动保护罩效果，彻底屏蔽系统原生壁纸误触。

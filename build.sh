@@ -4,10 +4,10 @@
 set -e
 
 VERSION="0.2.3"
-APP_NAME="ToDesktop"
+APP_NAME="BackDesk"
 BUILD_DIR="build"
 
-echo "=== 开始编译 ToDesktop v${VERSION} (macOS 12/13/14 通用多平台版) ==="
+echo "=== 开始编译 BackDesk v${VERSION} (macOS 12/13/14 通用多平台版) ==="
 
 # 1. 清理旧编译和打包产物
 echo "🧹 清除以往的旧版本和编译临时文件..."
@@ -143,7 +143,7 @@ package_app() {
             mount_point="/Volumes/${APP_NAME}"
         fi
         
-        # 复制 ToDesktop.app 到挂载目录并创建 Applications 软链接
+        # 复制 BackDesk.app 到挂载目录并创建 Applications 软链接
         echo "复制文件并创建 Applications 快捷方式..."
         cp -R "${target_app_name}" "${mount_point}/"
         ln -s /Applications "${mount_point}/Applications"
@@ -211,7 +211,7 @@ package_app() {
         rm -rf "${temp_dmg_dir}"
         mkdir -p "${temp_dmg_dir}"
         
-        # 复制干净的 ToDesktop.app 到临时目录，并创建 Applications 快捷方式
+        # 复制干净的 BackDesk.app 到临时目录，并创建 Applications 快捷方式
         cp -R "${target_app_name}" "${temp_dmg_dir}/"
         ln -s /Applications "${temp_dmg_dir}/Applications"
         
@@ -252,7 +252,7 @@ rm -f AppIcon.icns
 rm -rf "$BUILD_DIR"
 
 echo "=========================================="
-echo "🎉 所有平台版本 ToDesktop v${VERSION} 打包圆满成功！"
+echo "🎉 所有平台版本 BackDesk v${VERSION} 打包圆满成功！"
 echo "👉 您工作区当前目录下已有以下可发布文件："
 ls -lh ${APP_NAME}_v*.zip
 ls -lh ${APP_NAME}_v*.dmg
