@@ -3,7 +3,7 @@
 # 确保脚本发生任何错误时立即退出
 set -e
 
-VERSION="0.2.3"
+VERSION="0.2.4"
 APP_NAME="BackDesk"
 BUILD_DIR="build"
 
