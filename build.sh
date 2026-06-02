@@ -116,25 +116,115 @@ package_app() {
     zip -r -q "$target_zip_name" "$target_app_name"
     echo "✓ 成功生成 Zip 包: ${target_zip_name}"
     
-    # 2. 制作 DMG 磁盘映像安装包 (免依赖原生打包)
+    # 2. 制作 DMG 磁盘映像安装包 (支持个性化背景与图标排布)
     echo "💾 正在制作 DMG 镜像: ${target_dmg_name}..."
-    local temp_dmg_dir="dmg_temp_${arch}"
-    rm -rf "${temp_dmg_dir}"
-    mkdir -p "${temp_dmg_dir}"
     
-    # 复制干净的 ToDesktop.app 到临时目录，并创建 Applications 快捷方式
-    cp -R "${target_app_name}" "${temp_dmg_dir}/"
-    ln -s /Applications "${temp_dmg_dir}/Applications"
-    
-    # 确保清除可能重名的旧 dmg
-    rm -f "${target_dmg_name}"
-    
-    # 使用 hdiutil 编译打包
-    hdiutil create -volname "${APP_NAME}" -srcfolder "${temp_dmg_dir}" -ov -format UDZO "${target_dmg_name}" > /dev/null 2>&1
-    
-    # 清理临时目录
-    rm -rf "${temp_dmg_dir}"
-    echo "✓ 成功生成 DMG 镜像: ${target_dmg_name}"
+    if [ -f "dmg_background.png" ]; then
+        echo "🎨 检测到 dmg_background.png，正在制作个性化背景和图标布局的精美 DMG 镜像..."
+        
+        # 确保弹出可能残留的挂载
+        hdiutil detach "/Volumes/${APP_NAME}" -force >/dev/null 2>&1 || true
+        
+        # 确保清除可能重名的旧 dmg 和临时文件
+        rm -f "${target_dmg_name}"
+        local temp_raw_dmg="temp_raw_${arch}.dmg"
+        rm -f "${temp_raw_dmg}"
+        
+        # 创建一个临时可写 HFS+ DMG 映像 (64MB 足够容纳多架构通用二进制)
+        hdiutil create -size 64m -fs "HFS+" -volname "${APP_NAME}" -o "${temp_raw_dmg}" -quiet
+        
+        # 挂载此临时 writeable DMG
+        echo "挂载临时可写 DMG 映像..."
+        local mount_output
+        mount_output=$(hdiutil attach -readwrite "${temp_raw_dmg}")
+        local mount_point
+        mount_point=$(echo "$mount_output" | grep -o "/Volumes/${APP_NAME}[^ ]*")
+        if [ -z "$mount_point" ]; then
+            mount_point="/Volumes/${APP_NAME}"
+        fi
+        
+        # 复制 ToDesktop.app 到挂载目录并创建 Applications 软链接
+        echo "复制文件并创建 Applications 快捷方式..."
+        cp -R "${target_app_name}" "${mount_point}/"
+        ln -s /Applications "${mount_point}/Applications"
+        
+        # 创建隐藏的 .background 文件夹并复制背景图
+        mkdir -p "${mount_point}/.background"
+        cp dmg_background.png "${mount_point}/.background/dmg_background.png"
+        
+        # 使用 osascript 调整 Finder 窗口视图、背景图和图标位置
+        echo "运行 AppleScript 脚本设置 DMG 窗口与图标布局..."
+        
+        # 我们使用 osascript 执行 Finder 脚本控制窗口，添加 || true 防护
+        osascript -e "
+        tell application \"Finder\"
+            tell disk \"${APP_NAME}\"
+                open
+                delay 1
+                set the_window to container window
+                set current view of the_window to icon view
+                set toolbar visible of the_window to false
+                set statusbar visible of the_window to false
+                # 设置窗口的 Bounds (左, 上, 右, 下)，大小为 600x400
+                set bounds of the_window to {100, 100, 700, 500}
+                
+                set viewOptions to icon view options of the_window
+                set icon size of viewOptions to 110
+                set arrangement of viewOptions to not arranged
+                
+                # 设置自定义背景图
+                set background picture of viewOptions to file \".background:dmg_background.png\"
+                
+                # 定位应用图标和 Applications 快捷方式
+                # 600 宽的窗口，左侧定位在 160，右侧定位在 440，高度定位在 200（正中）
+                set position of item \"${target_app_name}\" of the_window to {160, 200}
+                set position of item \"Applications\" of the_window to {440, 200}
+                
+                close the_window
+                open
+                delay 2
+            end tell
+        end tell
+        " || true
+        
+        # 对目录下的 .background 和其它隐藏文件进行完全隐藏处理
+        echo "清理并优化 DMG 目录结构..."
+        chmod -Rf go-w "${mount_point}" || true
+        chflags -h hidden "${mount_point}/.background" || true
+        chflags -h hidden "${mount_point}/.background/dmg_background.png" || true
+        
+        # 卸载临时映像
+        echo "安全弹出临时可写 DMG 映像..."
+        hdiutil detach "${mount_point}" -force
+        
+        # 将临时可写 DMG 映像转换为高度压缩的只读 DMG 安装包
+        echo "将可写映像转换压缩为最终只读 DMG 安装包..."
+        hdiutil convert "${temp_raw_dmg}" -format UDZO -imagekey zlib-level=9 -o "${target_dmg_name}" -quiet
+        
+        # 清理临时文件
+        rm -f "${temp_raw_dmg}"
+        echo "✓ 成功制作了个性化 DMG 镜像: ${target_dmg_name}"
+    else
+        echo "⚠️ 未检测到 dmg_background.png，将以经典免依赖的普通版 DMG 方式打包..."
+        
+        local temp_dmg_dir="dmg_temp_${arch}"
+        rm -rf "${temp_dmg_dir}"
+        mkdir -p "${temp_dmg_dir}"
+        
+        # 复制干净的 ToDesktop.app 到临时目录，并创建 Applications 快捷方式
+        cp -R "${target_app_name}" "${temp_dmg_dir}/"
+        ln -s /Applications "${temp_dmg_dir}/Applications"
+        
+        # 确保清除可能重名的旧 dmg
+        rm -f "${target_dmg_name}"
+        
+        # 使用 hdiutil 编译打包
+        hdiutil create -volname "${APP_NAME}" -srcfolder "${temp_dmg_dir}" -ov -format UDZO "${target_dmg_name}" -quiet
+        
+        # 清理临时目录
+        rm -rf "${temp_dmg_dir}"
+        echo "✓ 成功生成普通版 DMG 镜像: ${target_dmg_name}"
+    fi
     
     # 如果不是最终的 universal 架构，清理 .app 目录以防混淆；如果是 universal，则保留供直接在终端运行测试
     if [ "$arch" != "universal" ]; then
