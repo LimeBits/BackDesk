@@ -9,33 +9,70 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var eventTap: CFMachPort?
     var runLoopSource: CFRunLoopSource?
     var globalMonitor: Any?
+    var eventTapWatchdogTimer: Timer?
     
     var isSingleClickEnabled: Bool = true
     var isDoubleClickEnabled: Bool = true
     var lastTriggerTime: Date = Date.distantPast
     var permissionTimer: Timer?
     var pendingClickWorkItem: DispatchWorkItem?
+    var mouseDownPoint: CGPoint?
+    var mouseDownStartedOnDesktop: Bool = false
+    var cachedWindowList: [[String: Any]]?
+    var cachedWindowListDate: Date = Date.distantPast
+    var swallowedClickTimes: [Date] = []
+    var monitoringResumeWorkItem: DispatchWorkItem?
+    var currentDesktopHitCountsForFuse: Bool = true
+    let userExcludedBundleIDsKey = "userExcludedBundleIDs"
+    let clickDebugLoggingEnabledKey = "clickDebugLoggingEnabled"
+    let dragCancelThreshold: CGFloat = 8
+    let swallowedClickFuseLimit = 8
+    let swallowedClickFuseWindow: TimeInterval = 6.0
+
+    enum DockHitTestResult {
+        case outsideDockArea
+        case dockWindow
+        case reservedEmptyArea
+    }
     
     // 自研的高保真双击判定状态机属性
     var lastClickTime: Date = Date.distantPast
     var lastClickPoint: CGPoint = .zero
+
+    func logFileURL() -> URL {
+        let fileManager = FileManager.default
+        do {
+            let appSupport = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let logDirectory = appSupport.appendingPathComponent("BackDesk", isDirectory: true)
+            try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+            return logDirectory.appendingPathComponent("backdesk.log")
+        } catch {
+            return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("backdesk.log")
+        }
+    }
     
     func logToFile(_ message: String) {
-        let logPath = "/Users/bruce/Desktop/b-vibe/todesktop/backdesk_test.log"
+        let logURL = logFileURL()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         let timestamp = formatter.string(from: Date())
         let logLine = "[\(timestamp)] \(message)\n"
         print(message)
         
-        if let fileHandle = FileHandle(forWritingAtPath: logPath) {
+        if let fileHandle = try? FileHandle(forWritingTo: logURL) {
             fileHandle.seekToEndOfFile()
             if let data = logLine.data(using: .utf8) {
                 fileHandle.write(data)
             }
             fileHandle.closeFile()
         } else {
-            try? logLine.write(toFile: logPath, atomically: true, encoding: .utf8)
+            try? logLine.write(to: logURL, atomically: true, encoding: .utf8)
+        }
+    }
+
+    func debugLog(_ message: String) {
+        if UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) {
+            logToFile(message)
         }
     }
     
@@ -43,7 +80,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         AppDelegate.shared = self
         
         // 清理以前的旧日志文件，开启本次运行的干净日志
-        try? FileManager.default.removeItem(atPath: "/Users/bruce/Desktop/b-vibe/todesktop/backdesk_test.log")
+        try? FileManager.default.removeItem(at: logFileURL())
         
         logToFile("==================================================================")
         logToFile("🚀 BackDesk 应用启动成功！正在载入极客监测日志系统...")
@@ -97,6 +134,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        monitoringResumeWorkItem?.cancel()
+        monitoringResumeWorkItem = nil
         stopMonitoring()
     }
     
@@ -179,6 +218,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(doubleClickItem)
         
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(buildCompatibilityMenuItem())
+        
+        menu.addItem(NSMenuItem.separator())
         
         // 权限状态/请求项
         let hasAccess = checkAccessibility(prompt: false)
@@ -200,6 +242,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q"))
         
         statusItem.menu = menu
+    }
+
+    func buildCompatibilityMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "高级兼容性", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let frontmostApp = currentContextApp()
+
+        let appExclusionTitle: String
+        let appExclusionState: NSControl.StateValue
+        if let app = frontmostApp {
+            let appName = app.localizedName ?? app.bundleIdentifier ?? "当前应用"
+            if isUserExcluded(bundleId: app.bundleIdentifier) {
+                appExclusionTitle = "关闭当前应用兼容模式：\(appName)"
+                appExclusionState = .on
+            } else {
+                appExclusionTitle = "开启当前应用兼容模式：\(appName)"
+                appExclusionState = .off
+            }
+        } else {
+            appExclusionTitle = "开启当前应用兼容模式"
+            appExclusionState = .off
+        }
+
+        let appExclusionItem = NSMenuItem(title: appExclusionTitle, action: #selector(toggleCurrentAppExclusion), keyEquivalent: "")
+        appExclusionItem.state = appExclusionState
+        appExclusionItem.isEnabled = frontmostApp?.bundleIdentifier != nil
+        submenu.addItem(appExclusionItem)
+
+        let clearExclusionItem = NSMenuItem(title: "清空兼容模式应用列表", action: #selector(clearAppExclusions), keyEquivalent: "")
+        clearExclusionItem.isEnabled = !userExcludedBundleIDs().isEmpty
+        submenu.addItem(clearExclusionItem)
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let debugItem = NSMenuItem(title: "记录点击调试日志", action: #selector(toggleClickDebugLogging), keyEquivalent: "")
+        debugItem.state = UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) ? .on : .off
+        submenu.addItem(debugItem)
+
+        if monitoringResumeWorkItem == nil {
+            let pauseItem = NSMenuItem(title: "紧急暂停监听 5 分钟", action: #selector(pauseMonitoringFromMenu), keyEquivalent: "")
+            submenu.addItem(pauseItem)
+        } else {
+            let resumeItem = NSMenuItem(title: "立即恢复监听", action: #selector(resumeMonitoringFromMenu), keyEquivalent: "")
+            submenu.addItem(resumeItem)
+        }
+
+        item.submenu = submenu
+        return item
     }
     
     // MARK: - 菜单事件响应
@@ -246,11 +336,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setLaunchAtLogin(enabled: !current)
         buildMenu()
     }
+
+    @objc func toggleCurrentAppExclusion() {
+        guard let app = currentContextApp(), let bundleId = app.bundleIdentifier else {
+            return
+        }
+
+        var excluded = userExcludedBundleIDs()
+        if excluded.contains(bundleId) {
+            excluded.remove(bundleId)
+            logToFile("✅ [应用排除] 已允许当前应用触发 BackDesk: \(bundleId)")
+        } else {
+            excluded.insert(bundleId)
+            logToFile("🛡️ [应用排除] 已在当前应用中停用 BackDesk: \(bundleId)")
+        }
+        UserDefaults.standard.set(Array(excluded).sorted(), forKey: userExcludedBundleIDsKey)
+        buildMenu()
+    }
+
+    @objc func clearAppExclusions() {
+        UserDefaults.standard.removeObject(forKey: userExcludedBundleIDsKey)
+        logToFile("✅ [应用排除] 已清空用户应用排除列表。")
+        buildMenu()
+    }
+
+    @objc func toggleClickDebugLogging() {
+        let newValue = !UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
+        UserDefaults.standard.set(newValue, forKey: clickDebugLoggingEnabledKey)
+        logToFile(newValue ? "🧪 [调试日志] 已开启点击调试日志。" : "🧪 [调试日志] 已关闭点击调试日志。")
+        buildMenu()
+    }
+
+    @objc func pauseMonitoringFromMenu() {
+        emergencyPauseMonitoring(seconds: 300, reason: "用户从菜单执行紧急暂停")
+    }
+
+    @objc func resumeMonitoringFromMenu() {
+        monitoringResumeWorkItem?.cancel()
+        monitoringResumeWorkItem = nil
+        logToFile("✅ [紧急暂停] 用户手动恢复监听。")
+        startMonitoring()
+        buildMenu()
+    }
     
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 BackDesk"
-        alert.informativeText = "BackDesk v0.2.4\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "BackDesk v0.2.5\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -307,7 +439,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 guard self.eventTap == nil else { return }
                 self.logToFile("🔄 准备异步创建 CGEventTap 事件过滤器...")
                 
-                let eventMask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+                let eventMask = CGEventMask(
+                    (1 << CGEventType.leftMouseDown.rawValue) |
+                    (1 << CGEventType.leftMouseDragged.rawValue) |
+                    (1 << CGEventType.leftMouseUp.rawValue)
+                )
                 AppDelegate.shared = self
                 
                 guard let tap = CGEvent.tapCreate(
@@ -338,11 +474,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 
                 CGEvent.tapEnable(tap: tap, enable: true)
+                self.startEventTapWatchdog()
                 self.logToFile("🎉 [EventTap] 已成功启用，开始截获系统鼠标左键按下事件监控。")
             } else {
                 // macOS 13 及以下直接使用极稳定全局监听机制，不需也不应使用 CGEventTap
                 guard self.globalMonitor == nil else { return }
-                self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
                     self?.handleGlobalClick(event)
                 }
                 self.logToFile("🎉 [GlobalMonitor] 已成功开启 macOS 13 及以下版本全局点击监听。")
@@ -352,6 +489,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func stopMonitoring() {
         if #available(macOS 14.0, *) {
+            eventTapWatchdogTimer?.invalidate()
+            eventTapWatchdogTimer = nil
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: false)
                 if let source = runLoopSource {
@@ -369,14 +508,92 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             print("已关闭全局点击监听")
         }
     }
+
+    func emergencyPauseMonitoring(seconds: TimeInterval, reason: String) {
+        logToFile("🚨 [紧急暂停] \(reason)。暂停监听 \(Int(seconds)) 秒，期间所有鼠标左键将原样放行。")
+        cancelPendingClick(reason: "紧急暂停监听")
+        resetMouseTracking()
+        swallowedClickTimes.removeAll()
+
+        monitoringResumeWorkItem?.cancel()
+        monitoringResumeWorkItem = nil
+        stopMonitoring()
+        buildMenu()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.logToFile("✅ [紧急暂停] 暂停时间结束，尝试恢复监听。")
+            self.monitoringResumeWorkItem = nil
+            self.startMonitoring()
+            self.buildMenu()
+        }
+        monitoringResumeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
+    }
+
+    func requestEmergencyPauseMonitoring(seconds: TimeInterval, reason: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.emergencyPauseMonitoring(seconds: seconds, reason: reason)
+        }
+    }
+
+    func startEventTapWatchdog() {
+        eventTapWatchdogTimer?.invalidate()
+        eventTapWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 15.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            guard self.checkAccessibility(prompt: false) else {
+                self.logToFile("⚠️ [EventTap Watchdog] 辅助功能权限当前不可用，暂停重启事件监听。")
+                return
+            }
+
+            if let tap = self.eventTap, CFMachPortIsValid(tap) {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            } else {
+                self.logToFile("⚠️ [EventTap Watchdog] 事件监听端口已失效，准备重建。")
+                self.eventTap = nil
+                self.runLoopSource = nil
+                self.startMonitoring()
+            }
+        }
+    }
     
     func handleCGEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            logToFile("⚠️ [EventTap] 监听被系统禁用(type=\(type.rawValue))，立即重新启用。")
+            if let tap = eventTap, CFMachPortIsValid(tap) {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            } else {
+                eventTap = nil
+                runLoopSource = nil
+                startMonitoring()
+            }
+            return Unmanaged.passRetained(event)
+        }
+
+        if isEmergencyBypassEvent(event) {
+            requestEmergencyPauseMonitoring(seconds: 60, reason: "检测到 Control+Option+Command 左键兜底手势")
+            return Unmanaged.passRetained(event)
+        }
+
+        if type == .leftMouseDragged {
+            handleDragProgress(at: event.location)
+            return mouseDownStartedOnDesktop ? nil : Unmanaged.passRetained(event)
+        }
+
+        if type == .leftMouseUp {
+            let startedOnDesktop = mouseDownStartedOnDesktop
+            resetMouseTracking()
+            return startedOnDesktop ? nil : Unmanaged.passRetained(event)
+        }
+
         if type == .leftMouseDown {
             let point = event.location
+            mouseDownPoint = point
+            mouseDownStartedOnDesktop = false
             logToFile("🖱️ [Click] 监听到鼠标左键按下，位置坐标: \(point)")
             
             // 核心修复：检查当前屏幕上是否有展开的弹出菜单（Menu Popup）。
-            if let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
+            if let windowList = currentWindowList() {
                 let popUpMenuLevel = CGWindowLevelForKey(.popUpMenuWindow)
                 let isMenuExpanded = windowList.contains { window in
                     guard let layer = window[kCGWindowLayer as String] as? Int else { return false }
@@ -391,6 +608,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             // 智能分析是否点击了桌面壁纸
             if isClickOnDesktop(at: point) {
+                mouseDownStartedOnDesktop = true
                 logToFile("🎯 [壁纸点击判定] 确认点击落在空白壁纸区域！")
                 let now = Date()
                 let timeDiff = now.timeIntervalSince(lastClickTime)
@@ -415,6 +633,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     lastClickPoint = .zero
                     
                     logToFile("🚫 [吞噬事件] 返回 nil，物理屏蔽此双击首发点击。")
+                    recordSwallowedClick(at: point, reason: "双击壁纸触发")
                     return nil
                 } else {
                     logToFile("⏱️ [单击第一下] 判定为可能是单击的第一下。")
@@ -452,11 +671,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                         // 返回 nil，吞噬该事件，避免系统原生功能的冲突
+                        recordSwallowedClick(at: point, reason: "单击壁纸触发或等待双击")
                         return nil
                     } else {
                         // 单击功能被关闭了
                         // 如果是 macOS 14+，我们通过返回 nil 彻底吞噬它，达到“屏蔽系统壁纸误触”的保护罩效果！
                         if #available(macOS 14.0, *) {
+                            recordSwallowedClick(at: point, reason: "单击功能关闭时屏蔽系统原生壁纸误触")
                             return nil
                         } else {
                             // macOS 13 及以下没有原生点击壁纸功能，直接传回原事件即可
@@ -477,10 +698,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 转换为 CG 坐标系 (Y 轴从屏幕顶部向下增加)
         let clickPoint = convertToCGCoordinate(mouseLocation)
+
+        if event.type == .leftMouseDragged {
+            handleDragProgress(at: clickPoint)
+            return
+        }
+
+        if event.type == .leftMouseUp {
+            resetMouseTracking()
+            return
+        }
+
+        guard event.type == .leftMouseDown else {
+            return
+        }
+
+        mouseDownPoint = clickPoint
+        mouseDownStartedOnDesktop = false
         
         logToFile("鼠标左键按下，位置坐标: \(clickPoint)")
         
         if isClickOnDesktop(at: clickPoint) {
+            mouseDownStartedOnDesktop = true
             logToFile("🎯 [macOS 13 壁纸点击判定] 确认点击落在空白壁纸区域！")
             let now = Date()
             let timeDiff = now.timeIntervalSince(lastClickTime)
@@ -537,9 +776,110 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     
     func convertToCGCoordinate(_ point: NSPoint) -> CGPoint {
-        guard let mainScreen = NSScreen.screens.first else { return point }
-        let screenHeight = mainScreen.frame.height
-        return CGPoint(x: point.x, y: screenHeight - point.y)
+        guard let primaryScreen = NSScreen.screens.first else { return point }
+        return CGPoint(x: point.x, y: primaryScreen.frame.maxY - point.y)
+    }
+
+    func convertToCocoaCoordinate(_ point: CGPoint) -> NSPoint {
+        guard let primaryScreen = NSScreen.screens.first else { return point }
+        return NSPoint(x: point.x, y: primaryScreen.frame.maxY - point.y)
+    }
+
+    func screenContaining(cocoaPoint: NSPoint) -> NSScreen? {
+        return NSScreen.screens.first { $0.frame.contains(cocoaPoint) }
+    }
+
+    func handleDragProgress(at point: CGPoint) {
+        guard mouseDownStartedOnDesktop, let downPoint = mouseDownPoint else {
+            return
+        }
+
+        let distance = hypot(point.x - downPoint.x, point.y - downPoint.y)
+        if distance > dragCancelThreshold {
+            cancelPendingClick(reason: "拖拽距离 \(String(format: "%.1f", distance))px 超过阈值")
+            lastClickTime = Date.distantPast
+            lastClickPoint = .zero
+            mouseDownStartedOnDesktop = false
+        }
+    }
+
+    func resetMouseTracking() {
+        mouseDownPoint = nil
+        mouseDownStartedOnDesktop = false
+    }
+
+    func cancelPendingClick(reason: String) {
+        if pendingClickWorkItem != nil {
+            logToFile("🛑 [取消触发] \(reason)，已取消挂起的单击动作。")
+        }
+        pendingClickWorkItem?.cancel()
+        pendingClickWorkItem = nil
+    }
+
+    func recordSwallowedClick(at point: CGPoint, reason: String) {
+        guard currentDesktopHitCountsForFuse else {
+            debugLog("🧪 [吞噬统计] reason=\(reason), point=\(point), 当前命中来源不计入自动保险丝。")
+            return
+        }
+
+        let now = Date()
+        swallowedClickTimes = swallowedClickTimes.filter { now.timeIntervalSince($0) <= swallowedClickFuseWindow }
+        swallowedClickTimes.append(now)
+        debugLog("🧪 [吞噬统计] reason=\(reason), point=\(point), count=\(swallowedClickTimes.count)/\(swallowedClickFuseLimit)")
+
+        if swallowedClickTimes.count >= swallowedClickFuseLimit {
+            requestEmergencyPauseMonitoring(seconds: 60, reason: "连续 \(swallowedClickTimes.count) 次左键被 BackDesk 吞噬，触发自动保险丝")
+        }
+    }
+
+    func userExcludedBundleIDs() -> Set<String> {
+        let values = UserDefaults.standard.stringArray(forKey: userExcludedBundleIDsKey) ?? []
+        return Set(values)
+    }
+
+    func isUserExcluded(bundleId: String?) -> Bool {
+        guard let bundleId = bundleId else { return false }
+        return userExcludedBundleIDs().contains(bundleId)
+    }
+
+    func currentContextApp() -> NSRunningApplication? {
+        let ignoredBundleIds: Set<String> = [
+            Bundle.main.bundleIdentifier ?? "",
+            "com.apple.systemuiserver",
+            "com.apple.controlcenter",
+            "com.apple.dock"
+        ]
+
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           let bundleId = frontmost.bundleIdentifier,
+           !ignoredBundleIds.contains(bundleId) {
+            return frontmost
+        }
+
+        return NSWorkspace.shared.runningApplications.first { app in
+            guard let bundleId = app.bundleIdentifier else { return false }
+            return app.isActive && !ignoredBundleIds.contains(bundleId)
+        }
+    }
+
+    func currentWindowList(maxAge: TimeInterval = 0.08) -> [[String: Any]]? {
+        let now = Date()
+        if let cachedWindowList = cachedWindowList, now.timeIntervalSince(cachedWindowListDate) <= maxAge {
+            return cachedWindowList
+        }
+
+        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        cachedWindowList = windowList
+        cachedWindowListDate = now
+        return windowList
+    }
+
+    func isEmergencyBypassEvent(_ event: CGEvent) -> Bool {
+        let flags = event.flags
+        return flags.contains(.maskControl) && flags.contains(.maskAlternate) && flags.contains(.maskCommand)
     }
     
     // 检查元素是否位于 Finder 实体标准文件夹窗口 (AXStandardWindow) 内部
@@ -592,34 +932,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func isClickOnDesktop(at point: CGPoint) -> Bool {
         logToFile("🔍 [壁纸分析] 开始进行多维度坐标重叠检测...")
+        currentDesktopHitCountsForFuse = true
         
         // 1. 核心检测：高精度拦截系统顶部菜单栏/状态栏区域的点击（仅限屏幕最顶部那一条窄边）。
-        guard let primaryScreen = NSScreen.screens.first else { return false }
-        let primaryHeight = primaryScreen.frame.height
-        let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
+        let cocoaPoint = convertToCocoaCoordinate(point)
+
+        if let frontmostApp = currentContextApp(), isUserExcluded(bundleId: frontmostApp.bundleIdentifier) {
+            logToFile("🛡️ [应用排除] 当前应用已停用 BackDesk: \(frontmostApp.localizedName ?? frontmostApp.bundleIdentifier ?? "Unknown")")
+            return false
+        }
         
-        for screen in NSScreen.screens {
-            let screenFrame = screen.frame
-            if screenFrame.contains(cocoaPoint) {
-                let visibleFrame = screen.visibleFrame
-                let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
-                if cocoaPoint.y >= menuBarTopBoundary {
-                    logToFile("⚠️ [拦截] 点击落在了系统顶部状态栏/菜单栏内，坐标 CocoaY=\(cocoaPoint.y) >= MenuBarBoundary=\(menuBarTopBoundary)")
-                    return false
-                }
-                break
+        if let screen = screenContaining(cocoaPoint: cocoaPoint) {
+            let visibleFrame = screen.visibleFrame
+            let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
+            if cocoaPoint.y >= menuBarTopBoundary {
+                logToFile("⚠️ [拦截] 点击落在了系统顶部状态栏/菜单栏内，坐标 CocoaY=\(cocoaPoint.y) >= MenuBarBoundary=\(menuBarTopBoundary)")
+                return false
             }
         }
 
         // 2. 获取所有在屏幕上显示的窗口，用于 Dock 点击几何辅助判定及兜底检测
-        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+        guard let windowList = currentWindowList() else {
             logToFile("❌ 无法获取系统可见窗口信息列表！")
             return false
         }
         
         // 3. 核心检测：精准判定点击是否落在 Dock 的实际物理像素渲染区域
-        if isClickInPhysicalDock(point: point, windowList: windowList) {
-            logToFile("⚠️ [拦截] 点击落在了系统 Dock 物理绘制区域内。")
+        let dockHitTest = dockHitTest(point: point, windowList: windowList)
+        if dockHitTest == .dockWindow {
+            logToFile("⚠️ [Dock放行] 点击落在了系统 Dock 或可能的图标区域内，交给系统处理。")
+            return false
+        }
+        if dockHitTest == .reservedEmptyArea {
+            currentDesktopHitCountsForFuse = false
+            logToFile("🎯 [Dock空白判定] 点击落在 Dock 预留区两侧空白，直接按桌面空白处理。")
+            return true
+        }
+
+        if hasProtectedOverlay(at: point, windowList: windowList) {
             return false
         }
         
@@ -704,7 +1054,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             
-            // 核心过滤：如果窗口位于 Layer > 0 且是全屏窗口（如微信 Layer 27 全屏透明截图/监听层），绝对是纯隐形窗口，一律不予拦截
+            if isProtectedOverlayWindow(pid: pid, ownerName: ownerName, windowName: windowName, layer: layer, rect: rect, window: window) {
+                logToFile("🛡️ [遮罩拦截] 检测到截图/选区类高层遮罩，放行给前台工具处理。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Bounds: \(rect)")
+                return false
+            }
+
+            // 核心过滤：如果窗口位于 Layer > 0 且是全屏窗口（如微信 Layer 27 全屏透明监听层），默认视为纯隐形窗口，不予拦截
             if layer > 0 && isFullscreen(rect: rect) {
                 continue
             }
@@ -764,6 +1119,76 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 其它情况（非常规应用 + 无标题 + 全屏尺寸）：大概率是手势软件全局抓取层、壁纸渲染层等“全屏隐形透明窗口”，不视为真实可交互窗口
         return false
     }
+
+    func isProtectedOverlayWindow(pid: Int32, ownerName: String, windowName: String, layer: Int, rect: CGRect, window: [String: Any]) -> Bool {
+        guard layer > 0, isFullscreen(rect: rect) else {
+            return false
+        }
+
+        guard let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0.01 else {
+            return false
+        }
+
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard frontmostPid == pid else {
+            return false
+        }
+
+        let protectedBundleIds: Set<String> = [
+            "com.tencent.xinWeChat",
+            "com.tencent.WeWorkMac",
+            "com.tencent.qq",
+            "com.tencent.QQ",
+            "com.snipaste.mac",
+            "cc.ffitch.shottr",
+            "com.cleanshot.CleanShot-X",
+            "com.xnipapp.Xnip",
+            "com.apple.screenshot",
+            "com.apple.ScreenCaptureKit"
+        ]
+
+        if let app = NSRunningApplication(processIdentifier: pid),
+           let bundleId = app.bundleIdentifier,
+           protectedBundleIds.contains(bundleId) {
+            return true
+        }
+
+        let combinedName = "\(ownerName) \(windowName)".lowercased()
+        let protectedNameKeywords = [
+            "wechat", "微信",
+            "wecom", "企业微信",
+            "qq",
+            "screenshot", "screen shot", "screen capture",
+            "截屏", "截图", "录屏", "选区",
+            "snip", "snipaste",
+            "cleanshot", "shottr", "xnip",
+            "lark", "feishu", "飞书",
+            "dingtalk", "钉钉"
+        ]
+
+        return protectedNameKeywords.contains { combinedName.contains($0.lowercased()) }
+    }
+
+    func hasProtectedOverlay(at point: CGPoint, windowList: [[String: Any]]) -> Bool {
+        for window in windowList {
+            guard let layer = window[kCGWindowLayer as String] as? Int,
+                  let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  rect.contains(point) else {
+                continue
+            }
+
+            let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
+            let windowName = window[kCGWindowName as String] as? String ?? ""
+            let pid = window[kCGWindowOwnerPID as String] as? Int32 ?? 0
+
+            if isProtectedOverlayWindow(pid: pid, ownerName: ownerName, windowName: windowName, layer: layer, rect: rect, window: window) {
+                logToFile("🛡️ [遮罩预检] 点击位于截图/选区类高层遮罩内，放行给前台工具。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Bounds: \(rect)")
+                return true
+            }
+        }
+        return false
+    }
     
     // 检测当前是否处于平铺（Mission Control）状态
     func isMissionControlActive() -> Bool {
@@ -772,7 +1197,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let dockPid = dockApp.processIdentifier
         
-        guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
+        guard let windowList = currentWindowList() else {
             return false
         }
         
@@ -802,37 +1227,156 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
     
-    // 检测点击是否落在 Dock 栏的实际物理绘制范围内（支持两侧空白区域点击触发，且完美覆盖废纸篓与堆栈栏）
-    func isClickInPhysicalDock(point: CGPoint, windowList: [[String: Any]]) -> Bool {
-        // 我们改用基于 NSScreen.visibleFrame 与 frame 差集的绝对数学几何算法。
-        // 这是 macOS 官方原生支持的最优雅、100% 准确、且完全不受任何多语言或全屏 Dock 交互窗口干扰的黄金判定！
-        guard let primaryScreen = NSScreen.screens.first else { return false }
-        let primaryHeight = primaryScreen.frame.height
-        let cocoaPoint = NSPoint(x: point.x, y: primaryHeight - point.y)
+    // 检测点击在 Dock 区域中的状态。
+    // visibleFrame 只能说明 Dock 预留了哪条屏幕边，不能代表整条区域都是 Dock；两侧空白应允许触发桌面操作。
+    // Dock 的窗口列表在部分系统状态下并不稳定，因此命不中实际窗口时，用 Dock 偏好和运行中 App 估算图标区域。
+    func dockHitTest(point: CGPoint, windowList: [[String: Any]]) -> DockHitTestResult {
+        let cocoaPoint = convertToCocoaCoordinate(point)
         
-        for screen in NSScreen.screens {
-            let screenFrame = screen.frame
-            if screenFrame.contains(cocoaPoint) {
-                let visibleFrame = screen.visibleFrame
-                
-                // 1. 如果点击落在 visibleFrame 内部，这绝对是可用的屏幕区域（非物理 Dock 区域），直接放行
-                if visibleFrame.contains(cocoaPoint) {
-                    return false
-                }
-                
-                // 2. 如果点击落在顶部状态栏/菜单栏（由 isClickOnDesktop 独立检测放过，这里也放行）
-                let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
-                if cocoaPoint.y >= menuBarTopBoundary {
-                    return false
-                }
-                
-                // 3. 如果点击在 screenFrame 内，但不在 visibleFrame 内，且不在顶部菜单栏：
-                // 这必然就是 Dock 物理条所在的像素区域（支持底部、左侧、右侧等任何摆放位置，且自动兼容自动隐藏状态）！
-                logToFile("Dock几何拦截: 点击落在 Dock 物理条区域! CocoaPoint=\(cocoaPoint), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)")
-                return true
+        guard let screen = screenContaining(cocoaPoint: cocoaPoint) else {
+            return .outsideDockArea
+        }
+
+        let screenFrame = screen.frame
+        let visibleFrame = screen.visibleFrame
+        
+        // 1. 如果点击落在 visibleFrame 内部，这绝对是可用的屏幕区域（非 Dock 预留区域），直接放行
+        if visibleFrame.contains(cocoaPoint) {
+            return .outsideDockArea
+        }
+        
+        // 2. 如果点击落在顶部状态栏/菜单栏（由 isClickOnDesktop 独立检测放过，这里也放行）
+        let menuBarTopBoundary = visibleFrame.origin.y + visibleFrame.height
+        if cocoaPoint.y >= menuBarTopBoundary {
+            return .outsideDockArea
+        }
+        
+        guard screenFrame.contains(cocoaPoint) else {
+            return .outsideDockArea
+        }
+
+        // 3. 处于 Dock 预留边缘区域时，只拦截 Dock 进程真正绘制出来的窗口范围。
+        // 这样 Dock 两侧空白仍然可以作为桌面空白触发单击/双击。
+        for window in windowList {
+            guard let layer = window[kCGWindowLayer as String] as? Int,
+                  layer >= 0,
+                  let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  let pid = window[kCGWindowOwnerPID as String] as? Int32 else {
+                continue
+            }
+
+            if let alpha = window[kCGWindowAlpha as String] as? Double, alpha <= 0.01 {
+                continue
+            }
+
+            guard let app = NSRunningApplication(processIdentifier: pid),
+                  app.bundleIdentifier == "com.apple.dock",
+                  !isFullscreen(rect: rect) else {
+                continue
+            }
+
+            let hitRect = rect.insetBy(dx: -4, dy: -4)
+            if hitRect.contains(point) {
+                logToFile("Dock物理窗口拦截: 点击落在 Dock 实际窗口内! CGPoint=\(point), DockBounds=\(rect), Layer=\(layer)")
+                return .dockWindow
             }
         }
-        return false
+
+        if let estimatedIconRect = estimatedDockIconRect(screenFrame: screenFrame, visibleFrame: visibleFrame),
+           estimatedIconRect.contains(cocoaPoint) {
+            logToFile("Dock自适应图标区保护: CocoaPoint=\(cocoaPoint), EstimatedIconRect=\(estimatedIconRect), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)，放行给系统 Dock 处理")
+            return .dockWindow
+        }
+
+        logToFile("Dock预留区域空白放行: CocoaPoint=\(cocoaPoint), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)")
+        return .reservedEmptyArea
+    }
+
+    func estimatedDockIconRect(screenFrame: NSRect, visibleFrame: NSRect) -> NSRect? {
+        let bottomDock = visibleFrame.minY > screenFrame.minY + 1
+        let topDock = visibleFrame.maxY < screenFrame.maxY - 1
+        let leftDock = visibleFrame.minX > screenFrame.minX + 1
+        let rightDock = visibleFrame.maxX < screenFrame.maxX - 1
+
+        if bottomDock || topDock {
+            let dockThickness = bottomDock ? visibleFrame.minY - screenFrame.minY : screenFrame.maxY - visibleFrame.maxY
+            let length = estimatedDockIconBandLength(axisLength: screenFrame.width, dockThickness: dockThickness)
+            let originX = dockIconBandOrigin(axisMin: screenFrame.minX, axisMax: screenFrame.maxX, length: length)
+            let originY = bottomDock ? screenFrame.minY : visibleFrame.maxY
+            return NSRect(x: originX, y: originY, width: length, height: dockThickness)
+        }
+
+        if leftDock || rightDock {
+            let dockThickness = leftDock ? visibleFrame.minX - screenFrame.minX : screenFrame.maxX - visibleFrame.maxX
+            let length = estimatedDockIconBandLength(axisLength: screenFrame.height, dockThickness: dockThickness)
+            let originY = dockIconBandOrigin(axisMin: screenFrame.minY, axisMax: screenFrame.maxY, length: length)
+            let originX = leftDock ? screenFrame.minX : visibleFrame.maxX
+            return NSRect(x: originX, y: originY, width: dockThickness, height: length)
+        }
+
+        return nil
+    }
+
+    func estimatedDockIconBandLength(axisLength: CGFloat, dockThickness: CGFloat) -> CGFloat {
+        let defaults = UserDefaults(suiteName: "com.apple.dock")
+        let tileSizeValue = defaults?.double(forKey: "tilesize") ?? 64
+        let tileSize = min(max(CGFloat(tileSizeValue), 32), 128)
+        let iconCount = estimatedDockIconCount(defaults: defaults)
+        let iconPitch = min(max(tileSize + 8, 40), max(dockThickness, tileSize) + 14)
+        let separatorAndEdgePadding = max(tileSize, dockThickness) * 1.5
+        let estimatedLength = CGFloat(iconCount) * iconPitch + separatorAndEdgePadding
+        return min(max(estimatedLength, tileSize * 4), axisLength)
+    }
+
+    func dockIconBandOrigin(axisMin: CGFloat, axisMax: CGFloat, length: CGFloat) -> CGFloat {
+        let axisLength = axisMax - axisMin
+        guard length < axisLength else {
+            return axisMin
+        }
+
+        let defaults = UserDefaults(suiteName: "com.apple.dock")
+        let pinning = defaults?.string(forKey: "pinning") ?? "middle"
+        let edgePadding: CGFloat = 8
+
+        switch pinning {
+        case "start":
+            return axisMin + edgePadding
+        case "end":
+            return axisMax - length - edgePadding
+        default:
+            return axisMin + (axisLength - length) / 2
+        }
+    }
+
+    func estimatedDockIconCount(defaults: UserDefaults?) -> Int {
+        let persistentApps = dockItems(defaults: defaults, key: "persistent-apps")
+        let persistentOthers = dockItems(defaults: defaults, key: "persistent-others")
+        let recentApps = dockItems(defaults: defaults, key: "recent-apps")
+        let pinnedBundleIDs = Set(persistentApps.compactMap { dockItemBundleIdentifier($0) })
+        let runningUnpinnedCount = NSWorkspace.shared.runningApplications.filter { app in
+            guard app.activationPolicy == .regular,
+                  let bundleID = app.bundleIdentifier,
+                  bundleID != Bundle.main.bundleIdentifier,
+                  !pinnedBundleIDs.contains(bundleID) else {
+                return false
+            }
+            return true
+        }.count
+
+        // +1 给废纸篓，+1 给分隔符/下载区等系统项目；最小值用于偏好读取失败时保持保守。
+        return max(6, persistentApps.count + persistentOthers.count + recentApps.count + runningUnpinnedCount + 2)
+    }
+
+    func dockItems(defaults: UserDefaults?, key: String) -> [[String: Any]] {
+        return (defaults?.array(forKey: key) ?? []).compactMap { $0 as? [String: Any] }
+    }
+
+    func dockItemBundleIdentifier(_ item: [String: Any]) -> String? {
+        guard let tileData = item["tile-data"] as? [String: Any] else {
+            return nil
+        }
+        return tileData["bundle-identifier"] as? String
     }
     
     func triggerShowDesktop() {
