@@ -27,7 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let userExcludedBundleIDsKey = "userExcludedBundleIDs"
     let clickDebugLoggingEnabledKey = "clickDebugLoggingEnabled"
     let lastUpdateCheckDateKey = "lastUpdateCheckDate"
-    let githubOwner = "brucetso"
+    let githubOwner = "LimeBits"
     let githubRepo = "BackDesk"
     let dragCancelThreshold: CGFloat = 8
     let swallowedClickFuseLimit = 8
@@ -307,6 +307,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         submenu.addItem(NSMenuItem(title: "检查更新...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "u"))
         submenu.addItem(NSMenuItem.separator())
         submenu.addItem(NSMenuItem(title: "反馈问题...", action: #selector(openFeedbackIssue), keyEquivalent: ""))
+        submenu.addItem(NSMenuItem(title: "打开项目主页", action: #selector(openProjectHome), keyEquivalent: ""))
         submenu.addItem(NSMenuItem(title: "打开 GitHub Issues", action: #selector(openGitHubIssues), keyEquivalent: ""))
         submenu.addItem(NSMenuItem(title: "复制诊断信息", action: #selector(copyDiagnosticInfo), keyEquivalent: ""))
         submenu.addItem(NSMenuItem(title: "查看日志文件", action: #selector(revealLogFile), keyEquivalent: ""))
@@ -432,6 +433,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openGitHubIssues() {
         if let url = URL(string: "https://github.com/\(githubOwner)/\(githubRepo)/issues") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func openProjectHome() {
+        if let url = URL(string: "https://github.com/\(githubOwner)/\(githubRepo)") {
             NSWorkspace.shared.open(url)
         }
     }
