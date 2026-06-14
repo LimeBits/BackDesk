@@ -1,0 +1,35 @@
+name: Compatibility report
+description: Report an app, Dock, screenshot, monitor, or macOS compatibility issue
+title: "Compatibility: "
+labels: ["compatibility"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Which app, tool, monitor setup, Dock position, or macOS feature is involved?
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Behavior
+      description: What did BackDesk do that felt wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste the output from BackDesk -> 帮助与反馈 -> 复制诊断信息.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Click debug logs
+      description: Enable click debug logs, reproduce once, then paste only the relevant lines.
+      render: text
+    validations:
+      required: false

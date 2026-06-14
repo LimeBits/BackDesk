@@ -23,11 +23,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var swallowedClickTimes: [Date] = []
     var monitoringResumeWorkItem: DispatchWorkItem?
     var currentDesktopHitCountsForFuse: Bool = true
+    var latestReleaseURL: URL?
     let userExcludedBundleIDsKey = "userExcludedBundleIDs"
     let clickDebugLoggingEnabledKey = "clickDebugLoggingEnabled"
+    let lastUpdateCheckDateKey = "lastUpdateCheckDate"
+    let githubOwner = "brucetso"
+    let githubRepo = "BackDesk"
     let dragCancelThreshold: CGFloat = 8
     let swallowedClickFuseLimit = 8
     let swallowedClickFuseWindow: TimeInterval = 6.0
+    let updateCheckInterval: TimeInterval = 24 * 60 * 60
 
     enum DockHitTestResult {
         case outsideDockArea
@@ -102,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 1. 创建状态栏图标与菜单
         setupStatusItem()
+        scheduleAutomaticUpdateCheckIfNeeded()
         
         // 2. 检查并请求辅助功能权限
         let hasAccess = checkAccessibility(prompt: false)
@@ -236,6 +242,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(loginItem)
         
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(buildHelpMenuItem())
+        menu.addItem(NSMenuItem.separator())
         
         // 关于与退出
         menu.addItem(NSMenuItem(title: "关于 BackDesk", action: #selector(showAbout), keyEquivalent: ""))
@@ -287,6 +295,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let resumeItem = NSMenuItem(title: "立即恢复监听", action: #selector(resumeMonitoringFromMenu), keyEquivalent: "")
             submenu.addItem(resumeItem)
         }
+
+        item.submenu = submenu
+        return item
+    }
+
+    func buildHelpMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "帮助与反馈", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+
+        submenu.addItem(NSMenuItem(title: "检查更新...", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "u"))
+        submenu.addItem(NSMenuItem.separator())
+        submenu.addItem(NSMenuItem(title: "反馈问题...", action: #selector(openFeedbackIssue), keyEquivalent: ""))
+        submenu.addItem(NSMenuItem(title: "打开 GitHub Issues", action: #selector(openGitHubIssues), keyEquivalent: ""))
+        submenu.addItem(NSMenuItem(title: "复制诊断信息", action: #selector(copyDiagnosticInfo), keyEquivalent: ""))
+        submenu.addItem(NSMenuItem(title: "查看日志文件", action: #selector(revealLogFile), keyEquivalent: ""))
 
         item.submenu = submenu
         return item
@@ -378,11 +401,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startMonitoring()
         buildMenu()
     }
+
+    @objc func checkForUpdatesFromMenu() {
+        checkForUpdates(isManual: true)
+    }
+
+    @objc func openFeedbackIssue() {
+        let title = "反馈："
+        let body = """
+        ## 问题描述
+
+
+        ## 复现步骤
+        1.
+        2.
+        3.
+
+        ## 期望行为
+
+
+        ## 诊断信息
+        \(diagnosticSummary())
+
+        ## 日志
+        如涉及点击误判，请在 BackDesk 菜单中开启「高级兼容性 -> 记录点击调试日志」，复现后粘贴相关日志片段。
+        """
+
+        openGitHubIssue(title: title, body: body, labels: "feedback")
+    }
+
+    @objc func openGitHubIssues() {
+        if let url = URL(string: "https://github.com/\(githubOwner)/\(githubRepo)/issues") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc func copyDiagnosticInfo() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(diagnosticSummary(), forType: .string)
+
+        let alert = NSAlert()
+        alert.messageText = "诊断信息已复制"
+        alert.informativeText = "可以直接粘贴到 GitHub Issue 中。诊断信息不包含点击日志正文或窗口标题。"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "好的")
+        alert.runModal()
+    }
+
+    @objc func revealLogFile() {
+        let url = logFileURL()
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url.deletingLastPathComponent())
+        }
+    }
     
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 BackDesk"
-        alert.informativeText = "BackDesk v0.2.5\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "BackDesk v0.2.6\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -390,6 +469,199 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func quitApp() {
         NSApplication.shared.terminate(nil)
+    }
+
+    // MARK: - 更新检查与反馈
+    func currentAppVersion() -> String {
+        return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    func scheduleAutomaticUpdateCheckIfNeeded() {
+        let lastCheck = UserDefaults.standard.object(forKey: lastUpdateCheckDateKey) as? Date ?? Date.distantPast
+        guard Date().timeIntervalSince(lastCheck) >= updateCheckInterval else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.checkForUpdates(isManual: false)
+        }
+    }
+
+    func checkForUpdates(isManual: Bool) {
+        guard let url = URL(string: "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases/latest") else {
+            return
+        }
+
+        if isManual {
+            logToFile("🔎 [更新检查] 用户手动检查更新。")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("BackDesk/\(currentAppVersion())", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.logToFile("⚠️ [更新检查] 请求失败: \(error.localizedDescription)")
+                if isManual {
+                    DispatchQueue.main.async {
+                        self.showUpdateErrorAlert(message: "无法连接到 GitHub Releases。请稍后再试，或直接打开项目页面查看。")
+                    }
+                }
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200, let data = data else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                self.logToFile("⚠️ [更新检查] GitHub 返回异常状态: \(status)")
+                if isManual {
+                    DispatchQueue.main.async {
+                        self.showUpdateErrorAlert(message: "暂时没有读取到有效的 GitHub Release 信息。")
+                    }
+                }
+                return
+            }
+
+            do {
+                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let tagName = json["tag_name"] as? String else {
+                    throw NSError(domain: "BackDesk.Update", code: 1, userInfo: [NSLocalizedDescriptionKey: "Release JSON 缺少 tag_name"])
+                }
+
+                let releaseName = json["name"] as? String ?? tagName
+                let releaseBody = json["body"] as? String ?? ""
+                let htmlURLString = json["html_url"] as? String ?? "https://github.com/\(self.githubOwner)/\(self.githubRepo)/releases/latest"
+                let latestVersion = self.normalizedVersion(tagName)
+                let currentVersion = self.normalizedVersion(self.currentAppVersion())
+                UserDefaults.standard.set(Date(), forKey: self.lastUpdateCheckDateKey)
+
+                if self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
+                    self.logToFile("✅ [更新检查] 发现新版本: \(tagName)，当前版本: \(self.currentAppVersion())")
+                    DispatchQueue.main.async {
+                        self.latestReleaseURL = URL(string: htmlURLString)
+                        self.showUpdateAvailableAlert(tagName: tagName, releaseName: releaseName, releaseBody: releaseBody, htmlURLString: htmlURLString)
+                    }
+                } else {
+                    self.logToFile("✅ [更新检查] 当前已是最新版本: \(self.currentAppVersion())")
+                    if isManual {
+                        DispatchQueue.main.async {
+                            self.showNoUpdateAlert()
+                        }
+                    }
+                }
+            } catch {
+                self.logToFile("⚠️ [更新检查] 解析失败: \(error.localizedDescription)")
+                if isManual {
+                    DispatchQueue.main.async {
+                        self.showUpdateErrorAlert(message: "更新信息解析失败，请稍后再试。")
+                    }
+                }
+            }
+        }.resume()
+    }
+
+    func showUpdateAvailableAlert(tagName: String, releaseName: String, releaseBody: String, htmlURLString: String) {
+        let alert = NSAlert()
+        alert.messageText = "发现新版本 \(tagName)"
+        let summary = releaseBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSummary = summary.count > 600 ? String(summary.prefix(600)) + "..." : summary
+        alert.informativeText = "当前版本：\(currentAppVersion())\n最新版本：\(releaseName)\n\n\(trimmedSummary)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "打开下载页面")
+        alert.addButton(withTitle: "稍后")
+
+        if alert.runModal() == .alertFirstButtonReturn, let url = URL(string: htmlURLString) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func showNoUpdateAlert() {
+        let alert = NSAlert()
+        alert.messageText = "当前已是最新版本"
+        alert.informativeText = "BackDesk \(currentAppVersion()) 已经是 GitHub Releases 上的最新版本。"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "好的")
+        alert.runModal()
+    }
+
+    func showUpdateErrorAlert(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "检查更新失败"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "打开项目发布页")
+        alert.addButton(withTitle: "好的")
+
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "https://github.com/\(githubOwner)/\(githubRepo)/releases") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func normalizedVersion(_ value: String) -> String {
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "^v", with: "", options: .regularExpression)
+    }
+
+    func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let leftParts = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let rightParts = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        let count = max(leftParts.count, rightParts.count)
+
+        for index in 0..<count {
+            let left = index < leftParts.count ? leftParts[index] : 0
+            let right = index < rightParts.count ? rightParts[index] : 0
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+
+        return .orderedSame
+    }
+
+    func openGitHubIssue(title: String, body: String, labels: String) {
+        var components = URLComponents(string: "https://github.com/\(githubOwner)/\(githubRepo)/issues/new")
+        components?.queryItems = [
+            URLQueryItem(name: "title", value: title),
+            URLQueryItem(name: "body", value: body),
+            URLQueryItem(name: "labels", value: labels)
+        ]
+
+        if let url = components?.url {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func diagnosticSummary() -> String {
+        let version = currentAppVersion()
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        let architecture: String
+        #if arch(arm64)
+        architecture = "arm64"
+        #elseif arch(x86_64)
+        architecture = "x86_64"
+        #else
+        architecture = "unknown"
+        #endif
+
+        let hasAccess = checkAccessibility(prompt: false)
+        let debugLogging = UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
+        let excludedAppsCount = userExcludedBundleIDs().count
+
+        return """
+        BackDesk version: \(version)
+        macOS: \(osVersion)
+        Architecture: \(architecture)
+        Accessibility permission: \(hasAccess ? "granted" : "missing")
+        Single click enabled: \(isSingleClickEnabled)
+        Double click enabled: \(isDoubleClickEnabled)
+        Click debug logging: \(debugLogging)
+        App compatibility exclusions: \(excludedAppsCount)
+        Log path: \(logFileURL().path)
+        """
     }
     
     // MARK: - 辅助功能权限管理
