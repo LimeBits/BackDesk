@@ -253,7 +253,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildCompatibilityMenuItem() -> NSMenuItem {
-        let item = NSMenuItem(title: "高级兼容性", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "应用兼容模式", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         let frontmostApp = currentContextApp()
 
@@ -281,20 +281,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let clearExclusionItem = NSMenuItem(title: "清空兼容模式应用列表", action: #selector(clearAppExclusions), keyEquivalent: "")
         clearExclusionItem.isEnabled = !userExcludedBundleIDs().isEmpty
         submenu.addItem(clearExclusionItem)
-
-        submenu.addItem(NSMenuItem.separator())
-
-        let debugItem = NSMenuItem(title: "记录点击调试日志", action: #selector(toggleClickDebugLogging), keyEquivalent: "")
-        debugItem.state = UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) ? .on : .off
-        submenu.addItem(debugItem)
-
-        if monitoringResumeWorkItem == nil {
-            let pauseItem = NSMenuItem(title: "紧急暂停监听 5 分钟", action: #selector(pauseMonitoringFromMenu), keyEquivalent: "")
-            submenu.addItem(pauseItem)
-        } else {
-            let resumeItem = NSMenuItem(title: "立即恢复监听", action: #selector(resumeMonitoringFromMenu), keyEquivalent: "")
-            submenu.addItem(resumeItem)
-        }
 
         item.submenu = submenu
         return item
@@ -425,7 +411,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         \(diagnosticSummary())
 
         ## 日志
-        如涉及点击误判，请在 BackDesk 菜单中开启「高级兼容性 -> 记录点击调试日志」，复现后粘贴相关日志片段。
+        如涉及点击误判，请在 BackDesk 菜单中使用「帮助与反馈 -> 查看日志文件」，并只粘贴与问题相关的日志片段。
         """
 
         openGitHubIssue(title: title, body: body, labels: "feedback")
@@ -468,7 +454,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 BackDesk"
-        alert.informativeText = "BackDesk v0.2.6\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "BackDesk v0.2.7\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
