@@ -57,6 +57,8 @@ graph TD
 
 *   `main.swift`：核心逻辑实现，包含应用生命周期、权限自动轮询、高精度屏幕区域差集计算、AX 桌面图标透传过滤等。
 *   `build.sh`：自动化多架构编译与 DMG 磁盘映像打包脚本。一键完成 Intel (x86_64) 和 Apple Silicon (arm64) 独立包及 Universal 通用包的编译、签名、Zip 压缩与 DMG 原生制作。
+*   `Scripts/dev.sh`：本机开发安装脚本，生成带调试菜单的全量功能版本并安装到 `/Applications/BackDesk.app`。
+*   `Scripts/package-app.sh`：生成本机 `.app`，支持 `--debug` 与 `--production` 两种构建配置。
 *   `diagnostics.swift`：可视化的层级点击诊断工具，方便在终端实时捕获鼠标坐标下的所有窗口层级深度。
 *   `Info.plist`：应用的包基本元数据，包含当前发布版本号。
 *   `PRIVACY.md` / `SECURITY.md`：开源发布所需的隐私与安全说明。
@@ -67,7 +69,30 @@ graph TD
 
 ## 🛠️ 编译、分发与运行
 
-### 1. 本地一键打包
+### 1. 本机调试安装
+开发和排查点击问题时，建议安装带调试菜单的本机版本：
+
+```bash
+./Scripts/dev.sh
+```
+
+这个脚本会重新编译 BackDesk，安装到 `/Applications/BackDesk.app`，并启动应用。调试版会在 **应用兼容模式** 菜单里显示「记录点击调试日志」和「紧急暂停监听 5 分钟」。
+
+只想检查调试版能否编译，不安装到系统应用目录：
+
+```bash
+./Scripts/dev.sh --build-only
+```
+
+如果 macOS 因重新编译导致辅助功能权限失效，可以运行：
+
+```bash
+./Scripts/dev.sh --reset-accessibility
+```
+
+然后在系统设置里关闭并重新打开 BackDesk 的辅助功能权限。
+
+### 2. 公开版本打包
 在终端中进入项目文件夹，运行打包脚本：
 ```bash
 ./build.sh
@@ -83,13 +108,15 @@ graph TD
 
 DMG 内包含 `BackDesk.app` 和 `Applications` 快捷方式，打开后可直接将 App 拖入应用程序目录。
 
-### 2. 安装与运行
+> 公开发布包不要使用 `./Scripts/dev.sh` 生成。公开包统一使用 `./build.sh` 和 `./Scripts/package-dmg.sh`，它们不会启用开发调试菜单。
+
+### 3. 安装与运行
 1. 解压 `BackDesk_v0.2.8_universal.zip`；
 2. 将 `BackDesk.app` 拖入 `Applications`（应用程序）文件夹中；
 3. 打开 Launchpad 或应用程序文件夹，双击运行 **`BackDesk`**。
 4. 顶部状态栏会常驻 🖥️ 图标，点击可勾选「开机自动启动」或查看辅助功能授权状态。
 
-### 3. 更新与反馈
+### 4. 更新与反馈
 *   菜单栏选择 **帮助与反馈 -> 检查更新...** 可读取 GitHub Releases 并提示是否存在新版本。
 *   菜单栏选择 **帮助与反馈 -> 反馈问题...** 可打开预填诊断信息的 GitHub Issue 页面。
 *   菜单栏选择 **帮助与反馈 -> 复制诊断信息** 可复制版本、系统、权限和日志路径等排查信息。

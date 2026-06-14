@@ -34,6 +34,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let swallowedClickFuseWindow: TimeInterval = 6.0
     let updateCheckInterval: TimeInterval = 24 * 60 * 60
 
+    var isDebugMenuEnabled: Bool {
+        #if BACKDESK_DEBUG_MENU
+        return true
+        #else
+        return false
+        #endif
+    }
+
     enum DockHitTestResult {
         case outsideDockArea
         case dockWindow
@@ -101,7 +109,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         isSingleClickEnabled = UserDefaults.standard.bool(forKey: "isSingleClickEnabled")
         isDoubleClickEnabled = UserDefaults.standard.bool(forKey: "isDoubleClickEnabled")
-        disableHiddenDebugPreferencesForPublicBuild()
+        configureDebugPreferencesForCurrentBuild()
         
         logToFile("加载配置偏好: isSingleClickEnabled = \(isSingleClickEnabled)")
         logToFile("加载配置偏好: isDoubleClickEnabled = \(isDoubleClickEnabled)")
@@ -283,6 +291,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         clearExclusionItem.isEnabled = !userExcludedBundleIDs().isEmpty
         submenu.addItem(clearExclusionItem)
 
+        #if BACKDESK_DEBUG_MENU
+        submenu.addItem(NSMenuItem.separator())
+
+        let debugItem = NSMenuItem(title: "记录点击调试日志", action: #selector(toggleClickDebugLogging), keyEquivalent: "")
+        debugItem.state = UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) ? .on : .off
+        submenu.addItem(debugItem)
+
+        if monitoringResumeWorkItem == nil {
+            let pauseItem = NSMenuItem(title: "紧急暂停监听 5 分钟", action: #selector(pauseMonitoringFromMenu), keyEquivalent: "")
+            submenu.addItem(pauseItem)
+        } else {
+            let resumeItem = NSMenuItem(title: "立即恢复监听", action: #selector(resumeMonitoringFromMenu), keyEquivalent: "")
+            submenu.addItem(resumeItem)
+        }
+        #endif
+
         item.submenu = submenu
         return item
     }
@@ -371,6 +395,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
     }
 
+    #if BACKDESK_DEBUG_MENU
+    @objc func toggleClickDebugLogging() {
+        let newValue = !UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
+        UserDefaults.standard.set(newValue, forKey: clickDebugLoggingEnabledKey)
+        logToFile(newValue ? "🧪 [调试日志] 已开启点击调试日志。" : "🧪 [调试日志] 已关闭点击调试日志。")
+        buildMenu()
+    }
+
+    @objc func pauseMonitoringFromMenu() {
+        emergencyPauseMonitoring(seconds: 300, reason: "用户从菜单执行紧急暂停")
+    }
+
+    @objc func resumeMonitoringFromMenu() {
+        monitoringResumeWorkItem?.cancel()
+        monitoringResumeWorkItem = nil
+        logToFile("✅ [紧急暂停] 用户手动恢复监听。")
+        startMonitoring()
+        buildMenu()
+    }
+    #endif
+
     @objc func checkForUpdatesFromMenu() {
         checkForUpdates(isManual: true)
     }
@@ -451,11 +496,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     }
 
-    func disableHiddenDebugPreferencesForPublicBuild() {
+    func configureDebugPreferencesForCurrentBuild() {
+        #if BACKDESK_DEBUG_MENU
+        logToFile("🛠️ [开发版] 调试菜单已启用。")
+        #else
         if UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) {
             UserDefaults.standard.set(false, forKey: clickDebugLoggingEnabledKey)
             logToFile("🧹 [公开版清理] 已关闭旧版本遗留的点击调试日志开关。")
         }
+        #endif
     }
 
     func scheduleAutomaticUpdateCheckIfNeeded() {

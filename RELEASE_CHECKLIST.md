@@ -6,16 +6,17 @@ Use this checklist before publishing a public GitHub release.
 
 - Update `VERSION` in `build.sh`.
 - Update `CFBundleShortVersionString` in `Info.plist`.
-- Update the version shown in `main.swift`.
 - Add release notes to `CHANGELOG.md`.
 
 ## Build
 
 - Run `swiftc -parse main.swift`.
+- Run `swiftc -D BACKDESK_DEBUG_MENU -parse main.swift`.
 - Run `./build.sh`.
 - Confirm generated zip files exist for `universal`, `arm64`, and `x86_64`.
 - Run `./Scripts/package-dmg.sh` when a drag-install DMG is needed.
 - Install the universal build locally and re-enable Accessibility permission if macOS invalidates it.
+- Confirm the public build does not show developer-only menu items such as `记录点击调试日志` or `紧急暂停监听 5 分钟`.
 
 ## Smoke Test
 
@@ -27,6 +28,7 @@ Use this checklist before publishing a public GitHub release.
 - Open the BackDesk menu and run `检查更新...`.
 - Run `复制诊断信息`.
 - Run `反馈问题...`.
+- For local debugging only, run `./Scripts/dev.sh` and confirm developer-only controls appear under `应用兼容模式`.
 
 ## Publish
 
