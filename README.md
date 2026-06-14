@@ -75,6 +75,14 @@ graph TD
 **编译产物**：
 脚本执行成功后，您将在项目根目录下获得针对不同芯片架构编译的 `.zip` 安装包。若当前 macOS 环境允许创建磁盘映像，也会额外生成 `.dmg` 镜像。推荐优先使用通用版 `BackDesk_v0.2.8_universal.zip`。
 
+如需单独生成可拖拽安装的 DMG：
+
+```bash
+./Scripts/package-dmg.sh
+```
+
+DMG 内包含 `BackDesk.app` 和 `Applications` 快捷方式，打开后可直接将 App 拖入应用程序目录。
+
 ### 2. 安装与运行
 1. 解压 `BackDesk_v0.2.8_universal.zip`；
 2. 将 `BackDesk.app` 拖入 `Applications`（应用程序）文件夹中；

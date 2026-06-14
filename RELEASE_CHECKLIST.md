@@ -14,6 +14,7 @@ Use this checklist before publishing a public GitHub release.
 - Run `swiftc -parse main.swift`.
 - Run `./build.sh`.
 - Confirm generated zip files exist for `universal`, `arm64`, and `x86_64`.
+- Run `./Scripts/package-dmg.sh` when a drag-install DMG is needed.
 - Install the universal build locally and re-enable Accessibility permission if macOS invalidates it.
 
 ## Smoke Test
@@ -33,7 +34,7 @@ Use this checklist before publishing a public GitHub release.
 - Push `main`.
 - Create and push an annotated tag matching the current version.
 - Create a GitHub Release from the tag.
-- Upload the generated zip files as release assets.
+- Upload the generated zip files and DMG as release assets.
 - Download the uploaded universal zip and launch it once to verify the asset.
 
 ## Future Signing
