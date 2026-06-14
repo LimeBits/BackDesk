@@ -11,6 +11,52 @@ BUILD_ONLY=false
 LAUNCH=true
 RESET_ACCESSIBILITY=false
 
+wait_for_app_exit() {
+    local attempts=30
+    while [[ "${attempts}" -gt 0 ]]; do
+        if ! /usr/bin/pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.2
+        attempts=$((attempts - 1))
+    done
+
+    printf '⚠️ %s 还没有完全退出，继续安装；如后续启动异常，请手动退出菜单栏旧实例后重试。\n' "${APP_NAME}"
+}
+
+wait_for_app_launch() {
+    local attempts=20
+    while [[ "${attempts}" -gt 0 ]]; do
+        if /usr/bin/pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+        attempts=$((attempts - 1))
+    done
+
+    return 1
+}
+
+launch_app() {
+    local binary="${INSTALLED_APP}/Contents/MacOS/${APP_NAME}"
+    local fallback_log="/tmp/backdesk-dev-launch.log"
+
+    if /usr/bin/open -n "${INSTALLED_APP}" >/dev/null 2>&1 && wait_for_app_launch; then
+        return 0
+    fi
+
+    printf '⚠️ open 启动失败，改用二进制兜底启动...\n'
+    if [[ -x "${binary}" ]]; then
+        /usr/bin/nohup "${binary}" >"${fallback_log}" 2>&1 &
+        if wait_for_app_launch; then
+            return 0
+        fi
+    fi
+
+    printf '✗ 启动失败，请手动打开 %s；兜底日志: %s\n' "${INSTALLED_APP}" "${fallback_log}" >&2
+    return 1
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --build-only)
@@ -45,6 +91,7 @@ fi
 
 printf '→ 关闭正在运行的 %s...\n' "${APP_NAME}"
 /usr/bin/pkill -x "${APP_NAME}" 2>/dev/null || true
+wait_for_app_exit
 
 printf '→ 安装调试版到 %s...\n' "${INSTALLED_APP}"
 rm -rf "${INSTALLED_APP}"
@@ -57,7 +104,7 @@ fi
 
 if [[ "${LAUNCH}" == true ]]; then
     printf '→ 启动调试版 %s...\n' "${APP_NAME}"
-    /usr/bin/open "${INSTALLED_APP}"
+    launch_app
 fi
 
 printf '✓ 本地调试版已安装。\n'
