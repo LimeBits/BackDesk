@@ -73,10 +73,10 @@ graph TD
 ./build.sh
 ```
 **编译产物**：
-脚本执行成功后，您将在项目根目录下获得针对不同芯片架构编译的 `.zip` 安装包。若当前 macOS 环境允许创建磁盘映像，也会额外生成 `.dmg` 镜像。推荐优先使用通用版 `BackDesk_v0.2.7_universal.zip`。
+脚本执行成功后，您将在项目根目录下获得针对不同芯片架构编译的 `.zip` 安装包。若当前 macOS 环境允许创建磁盘映像，也会额外生成 `.dmg` 镜像。推荐优先使用通用版 `BackDesk_v0.2.8_universal.zip`。
 
 ### 2. 安装与运行
-1. 解压 `BackDesk_v0.2.7_universal.zip`；
+1. 解压 `BackDesk_v0.2.8_universal.zip`；
 2. 将 `BackDesk.app` 拖入 `Applications`（应用程序）文件夹中；
 3. 打开 Launchpad 或应用程序文件夹，双击运行 **`BackDesk`**。
 4. 顶部状态栏会常驻 🖥️ 图标，点击可勾选「开机自动启动」或查看辅助功能授权状态。

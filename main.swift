@@ -101,6 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         isSingleClickEnabled = UserDefaults.standard.bool(forKey: "isSingleClickEnabled")
         isDoubleClickEnabled = UserDefaults.standard.bool(forKey: "isDoubleClickEnabled")
+        disableHiddenDebugPreferencesForPublicBuild()
         
         logToFile("加载配置偏好: isSingleClickEnabled = \(isSingleClickEnabled)")
         logToFile("加载配置偏好: isDoubleClickEnabled = \(isDoubleClickEnabled)")
@@ -370,25 +371,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
     }
 
-    @objc func toggleClickDebugLogging() {
-        let newValue = !UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
-        UserDefaults.standard.set(newValue, forKey: clickDebugLoggingEnabledKey)
-        logToFile(newValue ? "🧪 [调试日志] 已开启点击调试日志。" : "🧪 [调试日志] 已关闭点击调试日志。")
-        buildMenu()
-    }
-
-    @objc func pauseMonitoringFromMenu() {
-        emergencyPauseMonitoring(seconds: 300, reason: "用户从菜单执行紧急暂停")
-    }
-
-    @objc func resumeMonitoringFromMenu() {
-        monitoringResumeWorkItem?.cancel()
-        monitoringResumeWorkItem = nil
-        logToFile("✅ [紧急暂停] 用户手动恢复监听。")
-        startMonitoring()
-        buildMenu()
-    }
-
     @objc func checkForUpdatesFromMenu() {
         checkForUpdates(isManual: true)
     }
@@ -454,7 +436,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAbout() {
         let alert = NSAlert()
         alert.messageText = "关于 BackDesk"
-        alert.informativeText = "BackDesk v0.2.7\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
+        alert.informativeText = "BackDesk v\(currentAppVersion())\n专为 macOS 12/13/14+ 系统开发的桌面快速展示与误触防护工具。\n\n点击屏幕空白壁纸即可快速展示桌面，双击即可平铺所有窗口。\n\n在 macOS 14+ 上，支持独创的【屏蔽系统壁纸误触】主动防护罩技术。\n\n原生支持 Intel 及 Apple Silicon (ARM) 架构芯片。"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "好的")
         alert.runModal()
@@ -467,6 +449,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - 更新检查与反馈
     func currentAppVersion() -> String {
         return Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    func disableHiddenDebugPreferencesForPublicBuild() {
+        if UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) {
+            UserDefaults.standard.set(false, forKey: clickDebugLoggingEnabledKey)
+            logToFile("🧹 [公开版清理] 已关闭旧版本遗留的点击调试日志开关。")
+        }
     }
 
     func scheduleAutomaticUpdateCheckIfNeeded() {
@@ -487,6 +476,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if isManual {
             logToFile("🔎 [更新检查] 用户手动检查更新。")
+        } else {
+            UserDefaults.standard.set(Date(), forKey: lastUpdateCheckDateKey)
         }
 
         var request = URLRequest(url: url)
@@ -641,7 +632,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
 
         let hasAccess = checkAccessibility(prompt: false)
-        let debugLogging = UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
         let excludedAppsCount = userExcludedBundleIDs().count
 
         return """
@@ -651,7 +641,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Accessibility permission: \(hasAccess ? "granted" : "missing")
         Single click enabled: \(isSingleClickEnabled)
         Double click enabled: \(isDoubleClickEnabled)
-        Click debug logging: \(debugLogging)
         App compatibility exclusions: \(excludedAppsCount)
         Log path: \(logFileURL().path)
         """
