@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var swallowedClickTimes: [Date] = []
     var monitoringResumeWorkItem: DispatchWorkItem?
     var currentDesktopHitCountsForFuse: Bool = true
+    var currentDesktopHitIsDockReservedEmptyArea: Bool = false
     var latestReleaseURL: URL?
     let userExcludedBundleIDsKey = "userExcludedBundleIDs"
     let clickDebugLoggingEnabledKey = "clickDebugLoggingEnabled"
@@ -33,6 +34,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let swallowedClickFuseLimit = 8
     let swallowedClickFuseWindow: TimeInterval = 6.0
     let updateCheckInterval: TimeInterval = 24 * 60 * 60
+    let desktopDoubleClickDistance: CGFloat = 10
+    let dockReservedDoubleClickDistance: CGFloat = 18
+    let dockReservedDoubleClickIntervalPadding: TimeInterval = 0.12
 
     var isDebugMenuEnabled: Bool {
         #if BACKDESK_DEBUG_MENU
@@ -918,10 +922,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let clickDistance = hypot(point.x - lastClickPoint.x, point.y - lastClickPoint.y)
                 
                 // 系统双击阈值判定 (NSEvent.doubleClickInterval，通常为 0.25s - 0.3s)
-                let doubleClickInterval = NSEvent.doubleClickInterval
-                logToFile("状态机判定: doubleClickInterval = \(doubleClickInterval)s, 时间差 = \(timeDiff)s, 距离 = \(clickDistance)px")
+                let isDockReservedEmptyAreaClick = currentDesktopHitIsDockReservedEmptyArea
+                let doubleClickInterval = NSEvent.doubleClickInterval + (isDockReservedEmptyAreaClick ? dockReservedDoubleClickIntervalPadding : 0)
+                let doubleClickDistance = isDockReservedEmptyAreaClick ? dockReservedDoubleClickDistance : desktopDoubleClickDistance
+                logToFile("状态机判定: doubleClickInterval = \(doubleClickInterval)s, 时间差 = \(timeDiff)s, 距离 = \(clickDistance)px, 距离阈值 = \(doubleClickDistance)px, Dock空白 = \(isDockReservedEmptyAreaClick)")
                 
-                if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < 10 {
+                if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < doubleClickDistance {
                     logToFile("🔥 [双击触发] 判定为双击壁纸！彻底取消单击延迟任务，立即触发 Mission Control 平铺。")
                     
                     // 1. 彻底取消挂起的延迟单击任务，防止屏幕闪烁
@@ -1028,9 +1034,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let timeDiff = now.timeIntervalSince(lastClickTime)
             let clickDistance = hypot(clickPoint.x - lastClickPoint.x, clickPoint.y - lastClickPoint.y)
             
-            let doubleClickInterval = NSEvent.doubleClickInterval
+            let isDockReservedEmptyAreaClick = currentDesktopHitIsDockReservedEmptyArea
+            let doubleClickInterval = NSEvent.doubleClickInterval + (isDockReservedEmptyAreaClick ? dockReservedDoubleClickIntervalPadding : 0)
+            let doubleClickDistance = isDockReservedEmptyAreaClick ? dockReservedDoubleClickDistance : desktopDoubleClickDistance
+            logToFile("状态机判定: doubleClickInterval = \(doubleClickInterval)s, 时间差 = \(timeDiff)s, 距离 = \(clickDistance)px, 距离阈值 = \(doubleClickDistance)px, Dock空白 = \(isDockReservedEmptyAreaClick)")
             
-            if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < 10 {
+            if isDoubleClickEnabled && timeDiff < doubleClickInterval && clickDistance < doubleClickDistance {
                 logToFile("🔥 [macOS 13 双击触发] 判定为双击壁纸！彻底取消单击延迟任务，立即触发 Mission Control 平铺。")
                 pendingClickWorkItem?.cancel()
                 pendingClickWorkItem = nil
@@ -1109,6 +1118,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func resetMouseTracking() {
         mouseDownPoint = nil
         mouseDownStartedOnDesktop = false
+        currentDesktopHitIsDockReservedEmptyArea = false
     }
 
     func cancelPendingClick(reason: String) {
@@ -1236,6 +1246,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func isClickOnDesktop(at point: CGPoint) -> Bool {
         logToFile("🔍 [壁纸分析] 开始进行多维度坐标重叠检测...")
         currentDesktopHitCountsForFuse = true
+        currentDesktopHitIsDockReservedEmptyArea = false
         
         // 1. 核心检测：高精度拦截系统顶部菜单栏/状态栏区域的点击（仅限屏幕最顶部那一条窄边）。
         let cocoaPoint = convertToCocoaCoordinate(point)
@@ -1268,6 +1279,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if dockHitTest == .reservedEmptyArea {
             currentDesktopHitCountsForFuse = false
+            currentDesktopHitIsDockReservedEmptyArea = true
             logToFile("🎯 [Dock空白判定] 点击落在 Dock 预留区两侧空白，直接按桌面空白处理。")
             return true
         }
