@@ -66,7 +66,7 @@ let displayWhiteTop = color(0xFFFFFF)
 let displayWhiteBottom = color(0xE5E7E6)
 let displayEdge = color(0xC8CECF)
 let displayShadow = color(0x111A20, alpha: 0.36)
-let screenFill = color(0x2C3841)
+let screenFill = color(0x3E444D)
 let monitorYOffset: CGFloat = -36
 
 func stroke(_ path: NSBezierPath, with color: NSColor, width: CGFloat, lineCap: NSBezierPath.LineCapStyle = .round, lineJoin: NSBezierPath.LineJoinStyle = .round) {
@@ -77,8 +77,8 @@ func stroke(_ path: NSBezierPath, with color: NSColor, width: CGFloat, lineCap: 
     path.stroke()
 }
 
-let displayRect = CGRect(x: 244, y: 438 + monitorYOffset, width: 536, height: 306)
-let displayPath = roundedRect(displayRect, radius: 31)
+let displayRect = CGRect(x: 242, y: 432 + monitorYOffset, width: 540, height: 342)
+let displayPath = roundedRect(displayRect, radius: 30)
 
 drawShadow(path: displayPath, shadowColor: displayShadow, blur: 16, offset: CGSize(width: 0, height: -8))
 
@@ -93,23 +93,23 @@ displayEdge.setStroke()
 displayPath.lineWidth = 5
 displayPath.stroke()
 
-let screenRect = CGRect(x: 284, y: 500 + monitorYOffset, width: 456, height: 202)
-let screenPath = roundedRect(screenRect, radius: 9)
+let screenRect = CGRect(x: 284, y: 486 + monitorYOffset, width: 456, height: 244)
+let screenPath = roundedRect(screenRect, radius: 8)
 screenFill.setFill()
 screenPath.fill()
 color(0x111820, alpha: 0.18).setStroke()
 screenPath.lineWidth = 4
 screenPath.stroke()
 
-let lowerChin = NSBezierPath(roundedRect: CGRect(x: 282, y: 456 + monitorYOffset, width: 460, height: 48), xRadius: 13, yRadius: 13)
+let lowerChin = NSBezierPath(roundedRect: CGRect(x: 282, y: 448 + monitorYOffset, width: 460, height: 42), xRadius: 12, yRadius: 12)
 color(0xFFFFFF, alpha: 0.34).setFill()
 lowerChin.fill()
 
 let stand = NSBezierPath()
-stand.move(to: CGPoint(x: 484, y: 438 + monitorYOffset))
-stand.line(to: CGPoint(x: 540, y: 438 + monitorYOffset))
-stand.line(to: CGPoint(x: 552, y: 372 + monitorYOffset))
-stand.line(to: CGPoint(x: 472, y: 372 + monitorYOffset))
+stand.move(to: CGPoint(x: 486, y: 432 + monitorYOffset))
+stand.line(to: CGPoint(x: 538, y: 432 + monitorYOffset))
+stand.line(to: CGPoint(x: 548, y: 364 + monitorYOffset))
+stand.line(to: CGPoint(x: 476, y: 364 + monitorYOffset))
 stand.close()
 drawShadow(path: stand, shadowColor: displayShadow, blur: 8, offset: CGSize(width: 0, height: -4))
 let standGradient = NSGradient(colors: [
@@ -121,7 +121,7 @@ displayEdge.setStroke()
 stand.lineWidth = 4
 stand.stroke()
 
-let basePath = roundedRect(CGRect(x: 394, y: 352 + monitorYOffset, width: 236, height: 31), radius: 15)
+let basePath = roundedRect(CGRect(x: 394, y: 344 + monitorYOffset, width: 236, height: 31), radius: 15)
 drawShadow(path: basePath, shadowColor: displayShadow, blur: 8, offset: CGSize(width: 0, height: -4))
 displayGradient.draw(in: basePath, angle: 90)
 displayEdge.setStroke()
