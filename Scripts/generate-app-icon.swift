@@ -53,12 +53,8 @@ drawShadow(path: iconPath, shadowColor: color(0x000000, alpha: 0.32), blur: 38, 
 NSGraphicsContext.saveGraphicsState()
 iconPath.addClip()
 
-let backgroundGradient = NSGradient(colors: [
-    color(0x46525C),
-    color(0x34404A),
-    color(0x27323B)
-])!
-backgroundGradient.draw(in: iconRect, angle: 90)
+color(0x3E444D).setFill()
+iconPath.fill()
 
 NSGraphicsContext.restoreGraphicsState()
 
