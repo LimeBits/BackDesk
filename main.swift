@@ -1347,15 +1347,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     
                     if !shouldContinueToGeometryFallback {
                         // B. 双重保障：若是点击了 Dock 栏或其他系统 UI 特权元素
-                        if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
+                        if currentDesktopHitIsDockReservedEmptyArea && bundleId == "com.apple.dock" {
+                            logToFile("🎯 [AX判定] Dock 空白候选命中 Dock 辅助元素，继续执行几何窗口遮挡检测。")
+                            shouldContinueToGeometryFallback = true
+                        } else if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
                             logToFile("🛡️ [AX拦截] 点击落在系统特权进程元素上 (\(bundleId))")
                             return false
                         }
 
-                        // C. 其它第三方 App 的真实 UI 元素拦截
-                        // 如果点击到了其他任何第三方应用程序（如 Chrome, WeChat 聊天窗口，文本编辑等）的 UI 元素，说明物理上确实被真实可见窗口遮挡了
-                        logToFile("🛡️ [AX拦截] 点击落在活跃 App [\(appName)] 的真实 UI 元素上")
-                        return false
+                        if !shouldContinueToGeometryFallback {
+                            // C. 其它第三方 App 的真实 UI 元素拦截
+                            // 如果点击到了其他任何第三方应用程序（如 Chrome, WeChat 聊天窗口，文本编辑等）的 UI 元素，说明物理上确实被真实可见窗口遮挡了
+                            logToFile("🛡️ [AX拦截] 点击落在活跃 App [\(appName)] 的真实 UI 元素上")
+                            return false
+                        }
                     }
                 }
             }
@@ -1560,7 +1565,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // 检测点击在 Dock 区域中的状态。
     // visibleFrame 只能说明 Dock 预留了哪条屏幕边，不能代表整条区域都是 Dock；两侧空白应允许触发桌面操作。
-    // Dock 的窗口列表在部分系统状态下并不稳定，因此命不中实际窗口时，用 Dock 偏好和运行中 App 估算图标区域。
+    // Dock 的窗口列表在部分系统状态下并不稳定；命不中实际 Dock 窗口时，继续交给 AX/几何检测确认是否有真实窗口遮挡。
     func dockHitTest(point: CGPoint, windowList: [[String: Any]]) -> DockHitTestResult {
         let cocoaPoint = convertToCocoaCoordinate(point)
         
