@@ -1280,8 +1280,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if dockHitTest == .reservedEmptyArea {
             currentDesktopHitCountsForFuse = false
             currentDesktopHitIsDockReservedEmptyArea = true
-            logToFile("🎯 [Dock空白判定] 点击落在 Dock 预留区两侧空白，直接按桌面空白处理。")
-            return true
+            logToFile("🎯 [Dock空白候选] 点击落在 Dock 预留区两侧空白，继续检查是否有窗口遮挡。")
         }
 
         if hasProtectedOverlay(at: point, windowList: windowList) {
@@ -1293,6 +1292,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let systemWide = AXUIElementCreateSystemWide()
         var element: AXUIElement?
         let axResult = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
+        var shouldContinueToGeometryFallback = false
         
         if axResult == .success, let clickedElement = element {
             var elementPid: pid_t = 0
@@ -1327,8 +1327,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             let isInsideFolder = isInsideStandardWindow(element: clickedElement)
                             
                             if !isInsideFolder {
-                                logToFile("🎯 [AX判定] 确认点击落在空白壁纸最底层区域！")
-                                return true
+                                if currentDesktopHitIsDockReservedEmptyArea {
+                                    logToFile("🎯 [AX判定] Dock 空白候选命中 Finder 桌面背景，继续执行几何窗口遮挡检测。")
+                                    shouldContinueToGeometryFallback = true
+                                } else {
+                                    logToFile("🎯 [AX判定] 确认点击落在空白壁纸最底层区域！")
+                                    return true
+                                }
                             } else {
                                 logToFile("🛡️ [AX拦截] 点击落在 Finder 实体文件夹窗口的空白区域内")
                                 return false
@@ -1340,16 +1345,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     }
                     
-                    // B. 双重保障：若是点击了 Dock 栏或其他系统 UI 特权元素
-                    if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
-                        logToFile("🛡️ [AX拦截] 点击落在系统特权进程元素上 (\(bundleId))")
+                    if !shouldContinueToGeometryFallback {
+                        // B. 双重保障：若是点击了 Dock 栏或其他系统 UI 特权元素
+                        if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
+                            logToFile("🛡️ [AX拦截] 点击落在系统特权进程元素上 (\(bundleId))")
+                            return false
+                        }
+
+                        // C. 其它第三方 App 的真实 UI 元素拦截
+                        // 如果点击到了其他任何第三方应用程序（如 Chrome, WeChat 聊天窗口，文本编辑等）的 UI 元素，说明物理上确实被真实可见窗口遮挡了
+                        logToFile("🛡️ [AX拦截] 点击落在活跃 App [\(appName)] 的真实 UI 元素上")
                         return false
                     }
-                    
-                    // C. 其它第三方 App 的真实 UI 元素拦截
-                    // 如果点击到了其他任何第三方应用程序（如 Chrome, WeChat 聊天窗口，文本编辑等）的 UI 元素，说明物理上确实被真实可见窗口遮挡了
-                    logToFile("🛡️ [AX拦截] 点击落在活跃 App [\(appName)] 的真实 UI 元素上")
-                    return false
                 }
             }
         }
@@ -1407,7 +1414,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        logToFile("🎯 [几何判定] 未检测到任何实体常规窗口遮挡，判定为点击落在空白壁纸区域！")
+        if currentDesktopHitIsDockReservedEmptyArea {
+            logToFile("🎯 [Dock空白判定] Dock 预留区两侧空白未检测到窗口遮挡，判定为点击落在空白壁纸区域！")
+        } else {
+            logToFile("🎯 [几何判定] 未检测到任何实体常规窗口遮挡，判定为点击落在空白壁纸区域！")
+        }
         return true
     }
     
@@ -1603,106 +1614,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        if let estimatedIconRect = estimatedDockIconRect(screenFrame: screenFrame, visibleFrame: visibleFrame),
-           estimatedIconRect.contains(cocoaPoint) {
-            logToFile("Dock自适应图标区保护: CocoaPoint=\(cocoaPoint), EstimatedIconRect=\(estimatedIconRect), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)，放行给系统 Dock 处理")
-            return .dockWindow
-        }
-
         logToFile("Dock预留区域空白放行: CocoaPoint=\(cocoaPoint), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)")
         return .reservedEmptyArea
     }
 
-    func estimatedDockIconRect(screenFrame: NSRect, visibleFrame: NSRect) -> NSRect? {
-        let bottomDock = visibleFrame.minY > screenFrame.minY + 1
-        let topDock = visibleFrame.maxY < screenFrame.maxY - 1
-        let leftDock = visibleFrame.minX > screenFrame.minX + 1
-        let rightDock = visibleFrame.maxX < screenFrame.maxX - 1
-
-        if bottomDock || topDock {
-            let dockThickness = bottomDock ? visibleFrame.minY - screenFrame.minY : screenFrame.maxY - visibleFrame.maxY
-            let length = estimatedDockIconBandLength(axisLength: screenFrame.width, dockThickness: dockThickness)
-            let originX = dockIconBandOrigin(axisMin: screenFrame.minX, axisMax: screenFrame.maxX, length: length)
-            let originY = bottomDock ? screenFrame.minY : visibleFrame.maxY
-            return NSRect(x: originX, y: originY, width: length, height: dockThickness)
-        }
-
-        if leftDock || rightDock {
-            let dockThickness = leftDock ? visibleFrame.minX - screenFrame.minX : screenFrame.maxX - visibleFrame.maxX
-            let length = estimatedDockIconBandLength(axisLength: screenFrame.height, dockThickness: dockThickness)
-            let originY = dockIconBandOrigin(axisMin: screenFrame.minY, axisMax: screenFrame.maxY, length: length)
-            let originX = leftDock ? screenFrame.minX : visibleFrame.maxX
-            return NSRect(x: originX, y: originY, width: dockThickness, height: length)
-        }
-
-        return nil
-    }
-
-    func estimatedDockIconBandLength(axisLength: CGFloat, dockThickness: CGFloat) -> CGFloat {
-        let defaults = UserDefaults(suiteName: "com.apple.dock")
-        let tileSizeValue = defaults?.double(forKey: "tilesize") ?? 64
-        let tileSize = min(max(CGFloat(tileSizeValue), 32), 128)
-        let iconCount = estimatedDockIconCount(defaults: defaults)
-        let iconPitch = min(max(tileSize + 8, 40), max(dockThickness, tileSize) + 14)
-        let separatorAndEdgePadding = max(tileSize, dockThickness) * 1.5
-        let estimatedLength = CGFloat(iconCount) * iconPitch + separatorAndEdgePadding
-        // This is only a fallback when the real Dock window bounds did not catch the click.
-        // Keep it conservative so Dock side wallpaper remains usable even if app-count estimation is high.
-        let minimumSideBlank = max(80, dockThickness * 1.5)
-        let conservativeMaximumLength = max(tileSize * 4, axisLength - (minimumSideBlank * 2))
-        return min(max(estimatedLength, tileSize * 4), conservativeMaximumLength)
-    }
-
-    func dockIconBandOrigin(axisMin: CGFloat, axisMax: CGFloat, length: CGFloat) -> CGFloat {
-        let axisLength = axisMax - axisMin
-        guard length < axisLength else {
-            return axisMin
-        }
-
-        let defaults = UserDefaults(suiteName: "com.apple.dock")
-        let pinning = defaults?.string(forKey: "pinning") ?? "middle"
-        let edgePadding: CGFloat = 8
-
-        switch pinning {
-        case "start":
-            return axisMin + edgePadding
-        case "end":
-            return axisMax - length - edgePadding
-        default:
-            return axisMin + (axisLength - length) / 2
-        }
-    }
-
-    func estimatedDockIconCount(defaults: UserDefaults?) -> Int {
-        let persistentApps = dockItems(defaults: defaults, key: "persistent-apps")
-        let persistentOthers = dockItems(defaults: defaults, key: "persistent-others")
-        let recentApps = dockItems(defaults: defaults, key: "recent-apps")
-        let pinnedBundleIDs = Set(persistentApps.compactMap { dockItemBundleIdentifier($0) })
-        let runningUnpinnedCount = NSWorkspace.shared.runningApplications.filter { app in
-            guard app.activationPolicy == .regular,
-                  let bundleID = app.bundleIdentifier,
-                  bundleID != Bundle.main.bundleIdentifier,
-                  !pinnedBundleIDs.contains(bundleID) else {
-                return false
-            }
-            return true
-        }.count
-
-        // +1 给废纸篓，+1 给分隔符/下载区等系统项目；最小值用于偏好读取失败时保持保守。
-        return max(6, persistentApps.count + persistentOthers.count + recentApps.count + runningUnpinnedCount + 2)
-    }
-
-    func dockItems(defaults: UserDefaults?, key: String) -> [[String: Any]] {
-        return (defaults?.array(forKey: key) ?? []).compactMap { $0 as? [String: Any] }
-    }
-
-    func dockItemBundleIdentifier(_ item: [String: Any]) -> String? {
-        guard let tileData = item["tile-data"] as? [String: Any] else {
-            return nil
-        }
-        return tileData["bundle-identifier"] as? String
-    }
-    
     func triggerShowDesktop() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
