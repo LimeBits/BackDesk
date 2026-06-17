@@ -1648,17 +1648,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             } else {
-                self.postShowDesktopShortcut()
+                self.launchMissionControl(arguments: ["1"], logName: "ShowDesktop")
             }
         }
     }
 
-    func postShowDesktopShortcut() {
-        // On macOS 13 Intel, launching Mission Control with argument "1" can report
-        // success while only producing a tiny partial animation. Command-F3 uses the
-        // system Show Desktop shortcut path and is more reliable for that generation.
-        logToFile("唤醒系统快捷键展示桌面 (Command-F3)")
-        postKeyboardShortcut(keyCode: 99, flags: .maskCommand)
+    func launchMissionControl(arguments: [String] = [], logName: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
+        process.arguments = arguments
+        do {
+            try process.run()
+            logToFile("✓ Process launch \(logName) success. arguments=\(arguments)")
+        } catch {
+            logToFile("❌ Process launch \(logName) failed: \(error.localizedDescription)")
+        }
     }
 
     func postKeyboardShortcut(keyCode: CGKeyCode, flags: CGEventFlags = []) {
@@ -1700,14 +1704,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             } else {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
-                do {
-                    try process.run()
-                    self.logToFile("✓ Process launch MissionControl success.")
-                } catch {
-                    self.logToFile("❌ Process launch MissionControl failed: \(error.localizedDescription)")
-                }
+                self.launchMissionControl(logName: "MissionControl")
             }
         }
     }
