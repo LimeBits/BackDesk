@@ -1728,17 +1728,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             } else {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/System/Applications/Mission Control.app/Contents/MacOS/Mission Control")
-                process.arguments = ["1"]
-                do {
-                    try process.run()
-                    self.logToFile("✓ Process launch ShowDesktop success.")
-                } catch {
-                    self.logToFile("❌ Process launch ShowDesktop failed: \(error.localizedDescription)")
-                }
+                self.postShowDesktopShortcut()
             }
         }
+    }
+
+    func postShowDesktopShortcut() {
+        // On macOS 13 Intel, launching Mission Control with argument "1" can report
+        // success while only producing a tiny partial animation. Command-F3 uses the
+        // system Show Desktop shortcut path and is more reliable for that generation.
+        logToFile("唤醒系统快捷键展示桌面 (Command-F3)")
+        postKeyboardShortcut(keyCode: 99, flags: .maskCommand)
+    }
+
+    func postKeyboardShortcut(keyCode: CGKeyCode, flags: CGEventFlags = []) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else {
+            logToFile("❌ 无法创建系统快捷键事件: keyCode=\(keyCode)")
+            return
+        }
+
+        keyDown.flags = flags
+        keyUp.flags = flags
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+        logToFile("✓ 系统快捷键事件已发送: keyCode=\(keyCode), flags=\(flags.rawValue)")
     }
     
     func triggerMissionControl() {
