@@ -1313,8 +1313,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         
                         logToFile("🔍 [AX分析] 点击了 Finder 元素 - Role: \(role), Title: '\(title)'")
                         
-                        let isDesktopRole = (role == "AXScrollArea" || role == "AXWindow" || role == "AXGroup")
                         let isDesktopTitle = (title == "Desktop" || title == "桌面" || title.isEmpty)
+                        let isDesktopRole = (
+                            role == "AXScrollArea" ||
+                            role == "AXWindow" ||
+                            role == "AXGroup" ||
+                            (role == "AXImage" && isDesktopTitle)
+                        )
                         
                         if isDesktopRole && isDesktopTitle {
                             // 为了排除真实 Finder 文件夹窗口中的空白区域或组组件，
@@ -1641,7 +1646,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let iconPitch = min(max(tileSize + 8, 40), max(dockThickness, tileSize) + 14)
         let separatorAndEdgePadding = max(tileSize, dockThickness) * 1.5
         let estimatedLength = CGFloat(iconCount) * iconPitch + separatorAndEdgePadding
-        return min(max(estimatedLength, tileSize * 4), axisLength)
+        // This is only a fallback when the real Dock window bounds did not catch the click.
+        // Keep it conservative so Dock side wallpaper remains usable even if app-count estimation is high.
+        let minimumSideBlank = max(80, dockThickness * 1.5)
+        let conservativeMaximumLength = max(tileSize * 4, axisLength - (minimumSideBlank * 2))
+        return min(max(estimatedLength, tileSize * 4), conservativeMaximumLength)
     }
 
     func dockIconBandOrigin(axisMin: CGFloat, axisMax: CGFloat, length: CGFloat) -> CGFloat {
