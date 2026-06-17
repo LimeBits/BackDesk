@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Build a local BackDesk.app bundle.
-# Usage: ./Scripts/package-app.sh [--debug|--production]
+# Usage: ./Scripts/package-app.sh [--debug|--production] [--arm64|--x86_64] [--output-name NAME]
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="BackDesk"
-APP_DIR="${ROOT_DIR}/${APP_NAME}.app"
 BUILD_DIR="${ROOT_DIR}/build/local-app"
 SWIFT_MODULE_CACHE="/tmp/BackDeskSwiftModuleCache"
 PROFILE="production"
+ARCH="$(/usr/bin/uname -m)"
+OUTPUT_NAME="${APP_NAME}.app"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -20,8 +21,32 @@ while [[ $# -gt 0 ]]; do
             PROFILE="production"
             shift
             ;;
+        --arm64)
+            ARCH="arm64"
+            shift
+            ;;
+        --x86_64)
+            ARCH="x86_64"
+            shift
+            ;;
+        --arch)
+            if [[ $# -lt 2 ]]; then
+                printf '--arch 需要指定 arm64 或 x86_64\n' >&2
+                exit 1
+            fi
+            ARCH="$2"
+            shift 2
+            ;;
+        --output-name)
+            if [[ $# -lt 2 ]]; then
+                printf '--output-name 需要指定 .app 目录名\n' >&2
+                exit 1
+            fi
+            OUTPUT_NAME="$2"
+            shift 2
+            ;;
         -h|--help)
-            sed -n '1,5p' "$0"
+            sed -n '1,6p' "$0"
             exit 0
             ;;
         *)
@@ -30,6 +55,24 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+case "${PROFILE}" in
+    debug|production) ;;
+    *)
+        printf '不支持的构建类型: %s\n' "${PROFILE}" >&2
+        exit 1
+        ;;
+esac
+
+case "${ARCH}" in
+    arm64|x86_64) ;;
+    *)
+        printf '不支持的架构: %s，仅支持 arm64 或 x86_64\n' "${ARCH}" >&2
+        exit 1
+        ;;
+esac
+
+APP_DIR="${ROOT_DIR}/${OUTPUT_NAME}"
 
 generate_icon() {
     local icon_path="${ROOT_DIR}/AppIcon.icns"
@@ -93,7 +136,6 @@ NODE
 
 mkdir -p "${BUILD_DIR}" "${SWIFT_MODULE_CACHE}"
 
-ARCH="$(/usr/bin/uname -m)"
 BINARY_PATH="${BUILD_DIR}/${APP_NAME}-${PROFILE}-${ARCH}"
 SWIFT_FLAGS=(-module-cache-path "${SWIFT_MODULE_CACHE}" -target "${ARCH}-apple-macos12.0")
 
@@ -103,7 +145,7 @@ else
     SWIFT_FLAGS+=(-O)
 fi
 
-printf '→ 构建 %s 本机版本 (%s)...\n' "${PROFILE}" "${ARCH}"
+printf '→ 构建 %s 目标版本 (%s)...\n' "${PROFILE}" "${ARCH}"
 swiftc "${SWIFT_FLAGS[@]}" "${ROOT_DIR}/main.swift" -o "${BINARY_PATH}"
 
 rm -rf "${APP_DIR}"

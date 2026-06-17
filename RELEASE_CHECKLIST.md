@@ -12,6 +12,10 @@ Use this checklist before publishing a public GitHub release.
 
 - Run `swiftc -parse main.swift`.
 - Run `swiftc -D BACKDESK_DEBUG_MENU -parse main.swift`.
+- Run `./Scripts/package-debug-apple-silicon.sh`.
+- Run `./Scripts/package-release-apple-silicon.sh`.
+- Run `./Scripts/package-debug-intel.sh`.
+- Run `./Scripts/package-release-intel.sh`.
 - Run `./build.sh`.
 - Confirm generated zip files exist for `universal`, `arm64`, and `x86_64`.
 - Run `./Scripts/package-dmg.sh` when a drag-install DMG is needed.
