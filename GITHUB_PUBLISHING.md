@@ -28,20 +28,23 @@ git remote set-url github git@github.com:LimeBits/BackDesk.git
 git push github main
 ```
 
-## Release v0.2.8
+## Release v0.2.9
 
 After the repository exists on GitHub, publish the first GitHub release:
 
 ```bash
-git tag -a v0.2.8 -m "BackDesk v0.2.8"
-git push github v0.2.8
+git tag -a v0.2.9 -m "BackDesk v0.2.9"
+git push github v0.2.9
 ```
 
-Then open GitHub Releases and create a release from `v0.2.8`. Upload:
+Then open GitHub Releases and create a release from `v0.2.9`. Upload:
 
-- `BackDesk_v0.2.8_universal.zip`
-- `BackDesk_v0.2.8_arm64.zip`
-- `BackDesk_v0.2.8_x86_64.zip`
+- `BackDesk_v0.2.9_universal.zip`
+- `BackDesk_v0.2.9_universal.dmg`
+- `BackDesk_v0.2.9_arm64.zip`
+- `BackDesk_v0.2.9_arm64.dmg`
+- `BackDesk_v0.2.9_x86_64.zip`
+- `BackDesk_v0.2.9_x86_64.dmg`
 
 ## App Integration
 
