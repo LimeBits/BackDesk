@@ -1400,8 +1400,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 continue
             }
             
-            if isProtectedOverlayWindow(pid: pid, ownerName: ownerName, windowName: windowName, layer: layer, rect: rect, window: window) {
-                logToFile("🛡️ [遮罩拦截] 检测到截图/选区类高层遮罩，放行给前台工具处理。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Bounds: \(rect)")
+            if rect.contains(point), isProtectedOverlayWindow(pid: pid, ownerName: ownerName, windowName: windowName, layer: layer, rect: rect, window: window) {
+                logToFile("🛡️ [遮罩拦截] 检测到截图/分享/弹窗类高层遮罩，放行给前台工具处理。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Bounds: \(rect)")
                 return false
             }
 
@@ -1479,16 +1479,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func isProtectedOverlayWindow(pid: Int32, ownerName: String, windowName: String, layer: Int, rect: CGRect, window: [String: Any]) -> Bool {
-        guard layer > 0, isFullscreen(rect: rect) else {
+        guard layer > 0 else {
             return false
         }
 
         guard let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0.01 else {
-            return false
-        }
-
-        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard frontmostPid == pid else {
             return false
         }
 
@@ -1502,16 +1497,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "com.cleanshot.CleanShot-X",
             "com.xnipapp.Xnip",
             "com.apple.screenshot",
-            "com.apple.ScreenCaptureKit"
+            "com.apple.ScreenCaptureKit",
+            "com.apple.sharingd",
+            "com.apple.AirDrop",
+            "com.apple.finder"
         ]
 
         if let app = NSRunningApplication(processIdentifier: pid),
            let bundleId = app.bundleIdentifier,
-           protectedBundleIds.contains(bundleId) {
+           protectedBundleIds.contains(bundleId),
+           isProtectedOverlayName(ownerName: ownerName, windowName: windowName) || !isFullscreen(rect: rect) {
+            return true
+        }
+
+        if !isFullscreen(rect: rect), isTransientOverlayLayer(layer) {
             return true
         }
 
         let combinedName = "\(ownerName) \(windowName)".lowercased()
+        if isProtectedOverlayName(ownerName: ownerName, windowName: windowName) {
+            return true
+        }
+
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard frontmostPid == pid, isFullscreen(rect: rect) else {
+            return false
+        }
+
         let protectedNameKeywords = [
             "wechat", "微信",
             "wecom", "企业微信",
@@ -1525,6 +1537,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
 
         return protectedNameKeywords.contains { combinedName.contains($0.lowercased()) }
+    }
+
+    func isTransientOverlayLayer(_ layer: Int) -> Bool {
+        let transientLevels = [
+            Int(CGWindowLevelForKey(.popUpMenuWindow)),
+            Int(CGWindowLevelForKey(.modalPanelWindow)),
+            Int(CGWindowLevelForKey(.floatingWindow)),
+            Int(CGWindowLevelForKey(.utilityWindow)),
+            Int(CGWindowLevelForKey(.statusWindow))
+        ]
+
+        return transientLevels.contains(layer) || layer >= Int(CGWindowLevelForKey(.modalPanelWindow))
+    }
+
+    func isProtectedOverlayName(ownerName: String, windowName: String) -> Bool {
+        let combinedName = "\(ownerName) \(windowName)".lowercased()
+        let keywords = [
+            "airdrop", "air drop", "隔空投送",
+            "sharing", "share", "shared", "共享", "分享",
+            "sharesheet", "share sheet",
+            "sharingd",
+            "send copy", "发送副本"
+        ]
+
+        return keywords.contains { combinedName.contains($0.lowercased()) }
     }
 
     func hasProtectedOverlay(at point: CGPoint, windowList: [[String: Any]]) -> Bool {
@@ -1541,7 +1578,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let pid = window[kCGWindowOwnerPID as String] as? Int32 ?? 0
 
             if isProtectedOverlayWindow(pid: pid, ownerName: ownerName, windowName: windowName, layer: layer, rect: rect, window: window) {
-                logToFile("🛡️ [遮罩预检] 点击位于截图/选区类高层遮罩内，放行给前台工具。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Bounds: \(rect)")
+                logToFile("🛡️ [遮罩预检] 点击位于截图/分享/弹窗类高层遮罩内，放行给前台工具。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Bounds: \(rect)")
                 return true
             }
         }
