@@ -1402,6 +1402,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return false
             }
 
+            if isAppleSystemInteractiveOverlayWindow(pid: pid, ownerName: ownerName, windowName: windowName, layer: layer, rect: rect, window: window),
+               rect.contains(point) {
+                logToFile("🛡️ [系统浮层拦截] 点击位于 Apple 系统交互浮层内，放行给系统窗口。Owner: [\(ownerName)] PID: \(pid), Layer: \(layer), Title: '\(windowName)', Bounds: \(rect)")
+                return false
+            }
+
             // 核心过滤：如果窗口位于 Layer > 0 且是全屏窗口（如微信 Layer 27 全屏透明监听层），默认视为纯隐形窗口，不予拦截
             if layer > 0 && isFullscreen(rect: rect) {
                 continue
@@ -1523,6 +1529,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
 
         return protectedNameKeywords.contains { combinedName.contains($0.lowercased()) }
+    }
+
+    func isAppleSystemInteractiveOverlayWindow(pid: Int32, ownerName: String, windowName: String, layer: Int, rect: CGRect, window: [String: Any]) -> Bool {
+        guard layer > 0, isFullscreen(rect: rect) else {
+            return false
+        }
+
+        guard let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0.01 else {
+            return false
+        }
+
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              let bundleId = app.bundleIdentifier,
+              bundleId.hasPrefix("com.apple.") else {
+            return false
+        }
+
+        let combinedName = "\(bundleId) \(ownerName) \(windowName)".lowercased()
+        let systemOverlayKeywords = [
+            "airdrop", "air drop", "隔空投送",
+            "sharing", "share", "shared", "共享", "分享",
+            "sharekit", "share sheet",
+            "fileprovider", "file provider"
+        ]
+
+        if systemOverlayKeywords.contains(where: { combinedName.contains($0.lowercased()) }) {
+            return true
+        }
+
+        let overlayBundleIds: Set<String> = [
+            "com.apple.sharingd",
+            "com.apple.ShareKitHelper",
+            "com.apple.finder"
+        ]
+
+        if overlayBundleIds.contains(bundleId) {
+            let windowTitle = windowName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return windowTitle.isEmpty || systemOverlayKeywords.contains { windowTitle.localizedCaseInsensitiveContains($0) }
+        }
+
+        return false
     }
 
     func hasProtectedOverlay(at point: CGPoint, windowList: [[String: Any]]) -> Bool {
