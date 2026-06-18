@@ -1348,6 +1348,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if !shouldContinueToGeometryFallback {
                         // B. 双重保障：若是点击了 Dock 栏或其他系统 UI 特权元素
                         if currentDesktopHitIsDockReservedEmptyArea && bundleId == "com.apple.dock" {
+                            #if arch(x86_64)
+                            let role = axStringAttribute(clickedElement, kAXRoleAttribute)
+                            let subrole = axStringAttribute(clickedElement, kAXSubroleAttribute)
+                            let title = axStringAttribute(clickedElement, kAXTitleAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
+                            let description = axStringAttribute(clickedElement, kAXDescriptionAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
+                            logToFile("🔍 [Dock AX分析] Role: \(role), Subrole: \(subrole), Title: '\(title)', Description: '\(description)'")
+
+                            let hasDockItemText = !title.isEmpty || !description.isEmpty
+                            let isInteractiveDockRole = role == "AXButton" || role == "AXImage" || role == "AXMenuItem"
+                            if hasDockItemText || isInteractiveDockRole {
+                                logToFile("🛡️ [Dock AX拦截] x86 点击命中 Dock 图标或交互项，交给系统 Dock 处理。")
+                                return false
+                            }
+                            #endif
                             logToFile("🎯 [AX判定] Dock 空白候选命中 Dock 辅助元素，继续执行几何窗口遮挡检测。")
                             shouldContinueToGeometryFallback = true
                         } else if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
@@ -1425,6 +1439,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             logToFile("🎯 [几何判定] 未检测到任何实体常规窗口遮挡，判定为点击落在空白壁纸区域！")
         }
         return true
+    }
+
+    func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return ""
+        }
+        return value as? String ?? ""
     }
     
     // 检查应用是否属于标准的 Regular 前台图形应用（例如 Safari, Finder 文件夹窗口等）
