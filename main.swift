@@ -1327,6 +1327,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             let isInsideFolder = isInsideStandardWindow(element: clickedElement)
                             
                             if !isInsideFolder {
+                                if hasTransientOverlayAboveDesktop(at: point, windowList: windowList) {
+                                    logToFile("🛡️ [AX拦截] Finder 壁纸命中前检测到高层临时 UI，放行给前台窗口。")
+                                    return false
+                                }
+
                                 if currentDesktopHitIsDockReservedEmptyArea {
                                     logToFile("🎯 [AX判定] Dock 空白候选命中 Finder 桌面背景，继续执行几何窗口遮挡检测。")
                                     shouldContinueToGeometryFallback = true
@@ -1348,7 +1353,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if !shouldContinueToGeometryFallback {
                         // B. 双重保障：若是点击了 Dock 栏或其他系统 UI 特权元素
                         if currentDesktopHitIsDockReservedEmptyArea && bundleId == "com.apple.dock" {
-                            #if arch(x86_64)
                             let role = axStringAttribute(clickedElement, kAXRoleAttribute)
                             let subrole = axStringAttribute(clickedElement, kAXSubroleAttribute)
                             let title = axStringAttribute(clickedElement, kAXTitleAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1358,10 +1362,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             let hasDockItemText = !title.isEmpty || !description.isEmpty
                             let isInteractiveDockRole = role == "AXButton" || role == "AXImage" || role == "AXMenuItem"
                             if hasDockItemText || isInteractiveDockRole {
-                                logToFile("🛡️ [Dock AX拦截] x86 点击命中 Dock 图标或交互项，交给系统 Dock 处理。")
+                                logToFile("🛡️ [Dock AX拦截] 点击命中 Dock 图标或交互项，交给系统 Dock 处理。")
                                 return false
                             }
-                            #endif
                             logToFile("🎯 [AX判定] Dock 空白候选命中 Dock 辅助元素，继续执行几何窗口遮挡检测。")
                             shouldContinueToGeometryFallback = true
                         } else if bundleId == "com.apple.dock" || bundleId == "com.apple.systemuiserver" || bundleId == "com.apple.controlcenter" {
@@ -1584,6 +1587,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return false
     }
+
+    func hasTransientOverlayAboveDesktop(at point: CGPoint, windowList: [[String: Any]]) -> Bool {
+        for window in windowList {
+            guard let layer = window[kCGWindowLayer as String] as? Int,
+                  layer > 0,
+                  let boundsDict = window[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  rect.contains(point) else {
+                continue
+            }
+
+            if let alpha = window[kCGWindowAlpha as String] as? Double, alpha <= 0.01 {
+                continue
+            }
+
+            let ownerName = window[kCGWindowOwnerName as String] as? String ?? ""
+            let pid = window[kCGWindowOwnerPID as String] as? Int32 ?? 0
+            if pid == ProcessInfo.processInfo.processIdentifier || ownerName == "BackDesk" {
+                continue
+            }
+
+            if !isFullscreen(rect: rect) || isTransientOverlayLayer(layer) {
+                let windowName = window[kCGWindowName as String] as? String ?? ""
+                logToFile("🛡️ [高层UI拦截] 点击点上方存在临时高层窗口: Owner=[\(ownerName)] PID=\(pid), Layer=\(layer), Title='\(windowName)', Bounds=\(rect)")
+                return true
+            }
+        }
+
+        return false
+    }
     
     // 检测当前是否处于平铺（Mission Control）状态
     func isMissionControlActive() -> Bool {
@@ -1678,8 +1711,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        if let estimatedDockRect = estimatedDockInteractiveRect(screenFrame: screenFrame, visibleFrame: visibleFrame),
+           estimatedDockRect.contains(cocoaPoint) {
+            logToFile("Dock估算图标区域拦截: 点击落在 Dock 图标交互带内! CocoaPoint=\(cocoaPoint), EstimatedDockRect=\(estimatedDockRect)")
+            return .dockWindow
+        }
+
         logToFile("Dock预留区域空白放行: CocoaPoint=\(cocoaPoint), VisibleFrame=\(visibleFrame), ScreenFrame=\(screenFrame)")
         return .reservedEmptyArea
+    }
+
+    func estimatedDockInteractiveRect(screenFrame: CGRect, visibleFrame: CGRect) -> CGRect? {
+        let bottomInset = visibleFrame.minY - screenFrame.minY
+        let leftInset = visibleFrame.minX - screenFrame.minX
+        let rightInset = screenFrame.maxX - visibleFrame.maxX
+
+        enum DockEdge {
+            case bottom
+            case left
+            case right
+        }
+
+        let edge: DockEdge
+        let thickness: CGFloat
+        if bottomInset > 8 {
+            edge = .bottom
+            thickness = bottomInset
+        } else if leftInset > 8 {
+            edge = .left
+            thickness = leftInset
+        } else if rightInset > 8 {
+            edge = .right
+            thickness = rightInset
+        } else {
+            return nil
+        }
+
+        let dockDefaults = UserDefaults(suiteName: "com.apple.dock")
+        let tileSizeValue = dockDefaults?.double(forKey: "tilesize") ?? 64
+        let tileSize = CGFloat(max(32, min(tileSizeValue, 128)))
+        let persistentApps = dockDefaults?.array(forKey: "persistent-apps")?.count ?? 0
+        let persistentOthers = dockDefaults?.array(forKey: "persistent-others")?.count ?? 0
+        let recentApps = dockDefaults?.bool(forKey: "show-recents") == false ? 0 : 3
+        let itemCount = max(8, persistentApps + persistentOthers + recentApps)
+        let estimatedLength = CGFloat(itemCount) * (tileSize + 10) + 180
+
+        switch edge {
+        case .bottom:
+            let width = min(screenFrame.width * 0.92, estimatedLength)
+            let x = screenFrame.midX - width / 2
+            return CGRect(x: x, y: screenFrame.minY, width: width, height: thickness + 8)
+        case .left:
+            let height = min(screenFrame.height * 0.92, estimatedLength)
+            let y = screenFrame.midY - height / 2
+            return CGRect(x: screenFrame.minX, y: y, width: thickness + 8, height: height)
+        case .right:
+            let height = min(screenFrame.height * 0.92, estimatedLength)
+            let y = screenFrame.midY - height / 2
+            return CGRect(x: visibleFrame.maxX - 8, y: y, width: thickness + 8, height: height)
+        }
     }
 
     func triggerShowDesktop() {
