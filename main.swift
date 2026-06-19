@@ -1,6 +1,7 @@
 import Cocoa
 import CoreGraphics
 import ApplicationServices
+import Carbon
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
@@ -10,12 +11,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var runLoopSource: CFRunLoopSource?
     var globalMonitor: Any?
     var eventTapWatchdogTimer: Timer?
+    var emergencyHotKeyRef: EventHotKeyRef?
+    var emergencyHotKeyHandler: EventHandlerRef?
     
     var isSingleClickEnabled: Bool = true
     var isDoubleClickEnabled: Bool = true
     var lastTriggerTime: Date = Date.distantPast
     var permissionTimer: Timer?
     var pendingClickWorkItem: DispatchWorkItem?
+    var suppressSingleClickUntil: Date = Date.distantPast
     var mouseDownPoint: CGPoint?
     var mouseDownStartedOnDesktop: Bool = false
     var cachedWindowList: [[String: Any]]?
@@ -31,12 +35,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let githubOwner = "LimeBits"
     let githubRepo = "BackDesk"
     let dragCancelThreshold: CGFloat = 8
-    let swallowedClickFuseLimit = 8
+    let swallowedClickFuseLimit = 16
     let swallowedClickFuseWindow: TimeInterval = 6.0
     let updateCheckInterval: TimeInterval = 24 * 60 * 60
     let desktopDoubleClickDistance: CGFloat = 10
     let dockReservedDoubleClickDistance: CGFloat = 18
     let dockReservedDoubleClickIntervalPadding: TimeInterval = 0.12
+    let missionControlSingleClickSuppressDuration: TimeInterval = 0.85
 
     var isDebugMenuEnabled: Bool {
         #if BACKDESK_DEBUG_MENU
@@ -120,6 +125,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 1. 创建状态栏图标与菜单
         setupStatusItem()
+        registerEmergencyHotKey()
         scheduleAutomaticUpdateCheckIfNeeded()
         
         // 2. 检查并请求辅助功能权限
@@ -155,6 +161,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         monitoringResumeWorkItem?.cancel()
         monitoringResumeWorkItem = nil
+        unregisterEmergencyHotKey()
         stopMonitoring()
     }
     
@@ -237,6 +244,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(doubleClickItem)
         
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(buildSafetyPauseMenuItem())
+        
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(buildCompatibilityMenuItem())
         
         menu.addItem(NSMenuItem.separator())
@@ -301,18 +311,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let debugItem = NSMenuItem(title: "记录点击调试日志", action: #selector(toggleClickDebugLogging), keyEquivalent: "")
         debugItem.state = UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey) ? .on : .off
         submenu.addItem(debugItem)
-
-        if monitoringResumeWorkItem == nil {
-            let pauseItem = NSMenuItem(title: "紧急暂停监听 5 分钟", action: #selector(pauseMonitoringFromMenu), keyEquivalent: "")
-            submenu.addItem(pauseItem)
-        } else {
-            let resumeItem = NSMenuItem(title: "立即恢复监听", action: #selector(resumeMonitoringFromMenu), keyEquivalent: "")
-            submenu.addItem(resumeItem)
-        }
         #endif
 
         item.submenu = submenu
         return item
+    }
+
+    func buildSafetyPauseMenuItem() -> NSMenuItem {
+        if monitoringResumeWorkItem == nil {
+            return NSMenuItem(title: "安全暂停监听 5 分钟（⌃⌥⌘B）", action: #selector(pauseMonitoringFromMenu), keyEquivalent: "")
+        }
+
+        return NSMenuItem(title: "已安全暂停监听，点击立即恢复", action: #selector(resumeMonitoringFromMenu), keyEquivalent: "")
     }
 
     func buildHelpMenuItem() -> NSMenuItem {
@@ -399,14 +409,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
     }
 
-    #if BACKDESK_DEBUG_MENU
-    @objc func toggleClickDebugLogging() {
-        let newValue = !UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
-        UserDefaults.standard.set(newValue, forKey: clickDebugLoggingEnabledKey)
-        logToFile(newValue ? "🧪 [调试日志] 已开启点击调试日志。" : "🧪 [调试日志] 已关闭点击调试日志。")
-        buildMenu()
-    }
-
     @objc func pauseMonitoringFromMenu() {
         emergencyPauseMonitoring(seconds: 300, reason: "用户从菜单执行紧急暂停")
     }
@@ -415,7 +417,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         monitoringResumeWorkItem?.cancel()
         monitoringResumeWorkItem = nil
         logToFile("✅ [紧急暂停] 用户手动恢复监听。")
-        startMonitoring()
+        updateMonitoringState()
+        buildMenu()
+    }
+
+    #if BACKDESK_DEBUG_MENU
+    @objc func toggleClickDebugLogging() {
+        let newValue = !UserDefaults.standard.bool(forKey: clickDebugLoggingEnabledKey)
+        UserDefaults.standard.set(newValue, forKey: clickDebugLoggingEnabledKey)
+        logToFile(newValue ? "🧪 [调试日志] 已开启点击调试日志。" : "🧪 [调试日志] 已关闭点击调试日志。")
         buildMenu()
     }
     #endif
@@ -825,17 +835,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         monitoringResumeWorkItem?.cancel()
         monitoringResumeWorkItem = nil
         stopMonitoring()
-        buildMenu()
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.logToFile("✅ [紧急暂停] 暂停时间结束，尝试恢复监听。")
             self.monitoringResumeWorkItem = nil
-            self.startMonitoring()
+            self.updateMonitoringState()
             self.buildMenu()
         }
         monitoringResumeWorkItem = workItem
+        buildMenu()
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
+    }
+
+    func registerEmergencyHotKey() {
+        unregisterEmergencyHotKey()
+
+        let hotKeyID = EventHotKeyID(signature: Self.fourCharCode("BDES"), id: 1)
+        let modifiers = UInt32(controlKey | optionKey | cmdKey)
+        let keyCode = UInt32(kVK_ANSI_B)
+
+        let handler: EventHandlerUPP = { _, event, _ in
+            guard let event = event else { return noErr }
+
+            var hotKeyID = EventHotKeyID()
+            let result = GetEventParameter(
+                event,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID),
+                nil,
+                MemoryLayout<EventHotKeyID>.size,
+                nil,
+                &hotKeyID
+            )
+
+            if result == noErr, hotKeyID.signature == AppDelegate.fourCharCode("BDES"), hotKeyID.id == 1 {
+                DispatchQueue.main.async {
+                    AppDelegate.shared?.emergencyPauseMonitoring(seconds: 300, reason: "检测到 Control+Option+Command+B 键盘兜底快捷键")
+                }
+            }
+
+            return noErr
+        }
+
+        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let installResult = InstallEventHandler(GetApplicationEventTarget(), handler, 1, &eventSpec, nil, &emergencyHotKeyHandler)
+
+        guard installResult == noErr else {
+            logToFile("⚠️ [快捷键兜底] 注册事件处理器失败: \(installResult)")
+            return
+        }
+
+        let registerResult = RegisterEventHotKey(keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &emergencyHotKeyRef)
+        if registerResult == noErr {
+            logToFile("✓ [快捷键兜底] 已注册 Control+Option+Command+B 安全暂停快捷键。")
+        } else {
+            logToFile("⚠️ [快捷键兜底] 注册 Control+Option+Command+B 失败: \(registerResult)")
+            if let handlerRef = emergencyHotKeyHandler {
+                RemoveEventHandler(handlerRef)
+                emergencyHotKeyHandler = nil
+            }
+        }
+    }
+
+    func unregisterEmergencyHotKey() {
+        if let hotKeyRef = emergencyHotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            emergencyHotKeyRef = nil
+        }
+
+        if let handlerRef = emergencyHotKeyHandler {
+            RemoveEventHandler(handlerRef)
+            emergencyHotKeyHandler = nil
+        }
+    }
+
+    static func fourCharCode(_ value: String) -> OSType {
+        return value.utf8.reduce(0) { result, byte in
+            return (result << 8) + OSType(byte)
+        }
     }
 
     func requestEmergencyPauseMonitoring(seconds: TimeInterval, reason: String) {
@@ -952,6 +1030,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     pendingClickWorkItem?.cancel()
                     
                     if isSingleClickEnabled {
+                        if shouldSuppressSingleClickAfterMissionControl(now: now) {
+                            pendingClickWorkItem = nil
+                            lastClickTime = Date.distantPast
+                            lastClickPoint = .zero
+                            mouseDownStartedOnDesktop = false
+                            logToFile("🧊 [单击冷却] Mission Control 刚触发，BackDesk 放行本次点击，避免平铺后被 Show Desktop 拉回。")
+                            return Unmanaged.passRetained(event)
+                        }
+
                         let isMCActive = self.isMissionControlActive()
                         self.logToFile("🕵️ [平铺检测] 当前平铺状态 active = \(isMCActive)")
                         
@@ -1056,6 +1143,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 pendingClickWorkItem?.cancel()
                 
                 if isSingleClickEnabled {
+                    if shouldSuppressSingleClickAfterMissionControl(now: now) {
+                        pendingClickWorkItem = nil
+                        lastClickTime = Date.distantPast
+                        lastClickPoint = .zero
+                        mouseDownStartedOnDesktop = false
+                        logToFile("🧊 [macOS 13 单击冷却] Mission Control 刚触发，BackDesk 放行本次点击，避免平铺后被 Show Desktop 拉回。")
+                        return
+                    }
+
                     let isMCActive = self.isMissionControlActive()
                     self.logToFile("🕵️ [macOS 13 平铺检测] 当前平铺状态 active = \(isMCActive)")
                     
@@ -1129,8 +1225,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         pendingClickWorkItem = nil
     }
 
-    func recordSwallowedClick(at point: CGPoint, reason: String) {
-        guard currentDesktopHitCountsForFuse else {
+    func shouldSuppressSingleClickAfterMissionControl(now: Date = Date()) -> Bool {
+        return now < suppressSingleClickUntil
+    }
+
+    func recordSwallowedClick(at point: CGPoint, reason: String, countsForFuse: Bool = true) {
+        guard countsForFuse, currentDesktopHitCountsForFuse else {
             debugLog("🧪 [吞噬统计] reason=\(reason), point=\(point), 当前命中来源不计入自动保险丝。")
             return
         }
@@ -1701,6 +1801,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.lastTriggerTime = now
             
             self.logToFile("唤醒 Mission Control 展示桌面 (Show Desktop)")
+            self.activateFinderForDesktopMenu(reason: "Show Desktop 前恢复 Finder 菜单")
             
             if #available(macOS 14.0, *) {
                 let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
@@ -1717,6 +1818,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 self.launchMissionControl(arguments: ["1"], logName: "ShowDesktop")
             }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                self?.activateFinderForDesktopMenu(reason: "Show Desktop 后确认 Finder 菜单")
+            }
+        }
+    }
+
+    func activateFinderForDesktopMenu(reason: String) {
+        guard let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first else {
+            logToFile("⚠️ [Finder激活] 未找到 Finder 进程，原因: \(reason)")
+            return
+        }
+
+        if finder.activate(options: [.activateIgnoringOtherApps]) {
+            logToFile("✓ [Finder激活] 已恢复 Finder 菜单，原因: \(reason)")
+        } else {
+            logToFile("⚠️ [Finder激活] Finder 激活失败，原因: \(reason)")
         }
     }
 
@@ -1756,6 +1874,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             self.lastTriggerTime = now
+            self.suppressSingleClickUntil = now.addingTimeInterval(self.missionControlSingleClickSuppressDuration)
             
             self.logToFile("唤醒 Mission Control 展开所有窗口列表")
             
